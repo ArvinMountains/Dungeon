@@ -765,15 +765,15 @@ function addPoi(id, name, symbol, position, destination, onInteract, type = 'pla
 }
 
 function createTown() {
-  tiledFloor(townWorld, 24, -.13);
-  for (let i = -10; i <= 10; i++) for (const x of [-2.8, 2.8]) box(townWorld, .16, .09, .9, 0x79715a, x, -.01, i);
-  // Raised streets and retaining wall enclose a compact, readable town square.
-  for (const x of [-10.5, 10.5]) {
-    box(townWorld, .55, 1.0, 22, 0x434e3e, x, .3, 0);
-    for (let z = -10; z <= 10; z += 1.6) box(townWorld, .72, 1.3, .6, 0x56604c, x, .48, z);
+  tiledFloor(townWorld, 30, -.13);
+  for (let i = -13; i <= 13; i++) for (const x of [-3.8, 3.8]) box(townWorld, .16, .09, .9, 0x79715a, x, -.01, i);
+  // Raised streets and retaining walls frame a wider, less crowded sanctuary.
+  for (const x of [-14.1, 14.1]) {
+    box(townWorld, .55, 1.0, 29, 0x434e3e, x, .3, 0);
+    for (let z = -13.2; z <= 13.2; z += 1.6) box(townWorld, .72, 1.3, .6, 0x56604c, x, .48, z);
   }
-  box(townWorld, 22, 1.8, .6, 0x384637, 0, .75, -10.3);
-  const forge = building(townWorld, -6.8, -5.9, 4.6, 3.9, 2.7, 0x3a3530);
+  box(townWorld, 29, 1.8, .6, 0x384637, 0, .75, -13.7);
+  const forge = building(townWorld, -9.2, -8, 4.6, 3.9, 2.7, 0x3a3530);
   windowFrame(forge, -1.25, 1.65, 2.0, .72, .75);
   const hearth = gothicArch(forge, 1.35, 1.8, .3, 0x74634d);
   hearth.position.set(.7, .15, 2.03);
@@ -782,18 +782,18 @@ function createTown() {
     const ember = mesh(forge, new THREE.OctahedronGeometry(.2), warmMaterial, .3 + i * .13, .4 + random() * .2, 2.14, false);
     ember.scale.y = 1.5; flames.push({ mesh: ember, phase: random() * 9, base: 1.5 });
   }
-  const forgeLight = new THREE.PointLight(0xff9943, 17, 9, 2); forgeLight.position.set(-6, 1.9, -3.3); townWorld.add(forgeLight);
+  const forgeLight = new THREE.PointLight(0xff9943, 17, 9, 2); forgeLight.position.set(-8.1, 1.9, -5.4); townWorld.add(forgeLight);
   box(forge, .75, 2.3, .85, 0x3a4135, -1.15, 4.4, -.55);
   box(forge, .9, .2, 1, 0x6c624c, -1.15, 5.58, -.55);
-  const anvil = group(townWorld, -5.25, 0, -2.7);
+  const anvil = group(townWorld, -7.1, 0, -3.7);
   box(anvil, .65, .6, .55, 0x453b29, 0, .3);
   box(anvil, .82, .22, .43, 0x767a69, 0, .73);
   box(anvil, .41, .32, .36, 0x62695a, 0, .6);
   beam(anvil, [.32, .75, 0], [.66, .8, 0], .17, .22, 0x73796a);
-  obstacle(-5.25, -2.7, 1, .9);
-  const smith = createProceduralCharacter('warrior'); smith.root.position.set(-6.6, .06, -2.15); smith.root.scale.setScalar(.67); smith.root.rotation.y = .4; townWorld.add(smith.root); townNpcs.push(smith);
+  obstacle(-7.1, -3.7, 1, .9);
+  const smith = createProceduralCharacter('warrior'); smith.root.position.set(-8.9, .06, -3); smith.root.scale.setScalar(.67); smith.root.rotation.y = .4; townWorld.add(smith.root); townNpcs.push(smith);
 
-  const inn = building(townWorld, 6.3, -6.05, 4.5, 4.2, 3.45, 0x343c39);
+  const inn = building(townWorld, 8.6, -8.2, 4.5, 4.2, 3.45, 0x343c39);
   for (const x of [-1.3, 1.3]) { windowFrame(inn, x, 2.65, 2.13); windowFrame(inn, x, 1.15, 2.13, .54, .75); }
   box(inn, .86, 1.6, .08, 0x222e24, 0, .96, 2.16);
   box(inn, 1.0, .11, .4, 0x757058, 0, .22, 2.28);
@@ -801,12 +801,12 @@ function createTown() {
   box(inn, .76, .49, .08, 0x716245, .55, 2.16, 3.05);
   box(inn, .42, .045, .1, 0xc2ab6c, .55, 2.16, 3.1);
 
-  const chapel = building(townWorld, 0, -9, 4.5, 2.4, 4.1, 0x333d39);
+  const chapel = building(townWorld, 0, -12, 4.5, 2.4, 4.1, 0x333d39);
   const gate = gothicArch(chapel, 2.1, 3.65, .4, 0x77725d); gate.position.z = 1.38;
   box(chapel, 1.98, 3.2, .07, 0x12281f, 0, 1.6, 1.41);
   for (let x = -.8; x <= .8; x += .32) box(chapel, .055, 2.95, .09, 0x68684b, x, 1.5, 1.49);
   for (const side of [-1, 1]) {
-    const spire = group(townWorld, side * 2.6, 0, -8.9);
+    const spire = group(townWorld, side * 3.4, 0, -11.9);
     box(spire, .9, 5.1, 1, 0x535849, 0, 2.5);
     cylinder(spire, 0, .73, 2.35, 0x344139, 0, 6.05, 0, 4);
     box(spire, .055, .8, .055, 0x93835a, 0, 7.5); box(spire, .38, .055, .055, 0x93835a, 0, 7.64);
@@ -827,7 +827,7 @@ function createTown() {
   flames.push({ light: shrineLight, intensity: 15, phase: 0, shrine: true });
 
   // Apothecary's awning, stocked with little glass bottles.
-  const stall = group(townWorld, 7.1, 0, 1.3);
+  const stall = group(townWorld, 9.6, 0, 2);
   for (const x of [-1.2, 1.2]) for (const z of [-.7, .7]) box(stall, .08, 2.3, .08, 0x554d35, x, 1.15, z);
   box(stall, 2.4, .92, 1.25, 0x4b4632, 0, .46);
   box(stall, 2.65, .12, 1.4, 0x7a6950, 0, .98);
@@ -841,46 +841,46 @@ function createTown() {
     cylinder(stall, .045, .09, .22, i % 3 ? 0x74845d : 0x8e6651, x, 1.16, z, 5);
     cylinder(stall, .035, .035, .07, 0xb3a077, x, 1.3, z, 5);
   }
-  obstacle(7.1, 1.3, 2.8, 2.1);
-  const merchant = createProceduralCharacter('archer'); merchant.root.position.set(5.6, 0, 1.2); merchant.root.scale.setScalar(.63); merchant.root.rotation.y = -.9; townWorld.add(merchant.root); townNpcs.push(merchant);
+  obstacle(9.6, 2, 2.8, 2.1);
+  const merchant = createProceduralCharacter('archer'); merchant.root.position.set(7.8, 0, 1.9); merchant.root.scale.setScalar(.63); merchant.root.rotation.y = -.9; townWorld.add(merchant.root); townNpcs.push(merchant);
 
-  const board = group(townWorld, 4.8, 0, -2.75);
+  const board = group(townWorld, 6.6, 0, -3.8);
   for (const x of [-.58, .58]) box(board, .12, 2.0, .13, 0x514a35, x, 1);
   box(board, 1.45, .91, .16, 0x403c2c, 0, 1.5);
   box(board, 1.66, .12, .29, 0x7f7150, 0, 2.02);
   for (let i = 0; i < 3; i++) box(board, .3, .48 - i * .04, .02, i % 2 ? 0x9e946e : 0xb1a17a, -.43 + i * .42, 1.52, .098).rotation.z = (i - 1) * .1;
-  obstacle(4.8, -2.75, 1.65, .7);
-  const dummy = group(townWorld, -5.3, 0, 4.5);
+  obstacle(6.6, -3.8, 1.65, .7);
+  const dummy = group(townWorld, -7.3, 0, 6.2);
   cylinder(dummy, .07, .08, 1.9, 0x686043, 0, .95);
   cylinder(dummy, .25, .27, .69, 0x9a8660, 0, 1.26, 0, 6);
   box(dummy, 1.05, .1, .12, 0x786b4e, 0, 1.5);
   cylinder(dummy, .2, .2, .32, 0xb1a078, 0, 1.78, 0, 6);
   box(dummy, .13, .13, .02, 0x594c34, 0, 1.37, .25);
-  obstacle(-5.3, 4.5, .8, .8);
+  obstacle(-7.3, 6.2, .8, .8);
   townWorld.userData.dummy = dummy;
-  for (const [x, z] of [[-3.6,-5.9],[3.5,-5.9],[-7,3.3],[3.7,4.7]]) candelabra(townWorld, x, z, 1.6, false);
-  for (const [x, z] of [[-8.2,-2.7],[-7.5,-2.5],[8.7,-2.6],[8.6,4.5],[-7.8,6.6]]) crate(townWorld, x, z);
-  for (const [x, z, s] of [[-9,3.8,1.1],[9,6.5,1.3],[-8,8.4,.9],[8.7,-9,1.2]]) deadTree(townWorld, x, z, s);
+  for (const [x, z] of [[-4.8,-8],[4.7,-8],[-9.5,4.5],[5,6.4]]) candelabra(townWorld, x, z, 1.6, false);
+  for (const [x, z] of [[-11.2,-3.7],[-10.3,-3.4],[11.7,-3.5],[11.6,6.2],[-10.6,9]]) crate(townWorld, x, z);
+  for (const [x, z, s] of [[-12.2,5.2,1.1],[12.2,8.8,1.3],[-10.8,11.4,.9],[11.8,-12.1,1.2]]) deadTree(townWorld, x, z, s);
   // A foreground fence gives the diorama a miniature, layered silhouette.
   for (const side of [-1, 1]) {
-    box(townWorld, 5.5, .13, .2, 0x62634b, side * 5.6, .8, 9.7);
-    for (let x = 3; x < 8.5; x += .6) box(townWorld, .06, 1.4, .06, 0x384732, side * x, .65, 9.7);
+    box(townWorld, 8.6, .13, .2, 0x62634b, side * 8.2, .8, 12.8);
+    for (let x = 4; x < 12.5; x += .6) box(townWorld, .06, 1.4, .06, 0x384732, side * x, .65, 12.8);
   }
-  for (let i = 0; i < 55; i++) {
-    const x = (random() - .5) * 20, z = (random() - .5) * 19;
-    if (Math.abs(x) < 2.8) continue;
+  for (let i = 0; i < 72; i++) {
+    const x = (random() - .5) * 27, z = (random() - .5) * 26;
+    if (Math.abs(x) < 3.8) continue;
     const rock = box(townWorld, .09 + random() * .22, .06, .1 + random() * .18, i % 3 ? 0x666b50 : 0x344f32, x, .02, z);
     rock.rotation.y = random() * TAU;
   }
-  for (let i = 0; i < 3; i++) makeFog(townWorld, 29, .1 + .28 * i, .075);
-  motes.push(makeMotes(townWorld, 95, 23, 0xc2b786));
-  addPoi('smith', '铁匠铺', '⚒', [-6, 2.7, -2.3], [-5.7, -1.45], smithDialog);
-  addPoi('board', '告示板', '!', [4.8, 2.7, -2.75], [4.7, -1.55], boardDialog);
+  for (let i = 0; i < 3; i++) makeFog(townWorld, 38, .1 + .28 * i, .075);
+  motes.push(makeMotes(townWorld, 125, 31, 0xc2b786));
+  addPoi('smith', '铁匠铺', '⚒', [-8.3, 2.7, -3.2], [-7.8, -2.2], smithDialog);
+  addPoi('board', '告示板', '!', [6.6, 2.7, -3.8], [6.5, -2.6], boardDialog);
   addPoi('shrine', '余火祭坛', '✦', [0, 2.6, 0], [0, 2], shrineDialog);
-  addPoi('merchant', '药剂商', '+', [6.4, 2.6, 1.3], [5.0, 1.8], merchantDialog);
-  addPoi('dummy', '训练木桩', '†', [-5.3, 2.6, 4.5], [-4.15, 4.6], dummyDialog);
-  addPoi('gate', '深渊之门', '◇', [0, 4.3, -7.5], [0, -6.4], gateDialog);
-  const locations = [[-3.2, 3.35], [3.2, 5.7], [2.2, -4.7]];
+  addPoi('merchant', '药剂商', '+', [8.9, 2.6, 2], [7.6, 2.6], merchantDialog);
+  addPoi('dummy', '训练木桩', '†', [-7.3, 2.6, 6.2], [-6.1, 6.3], dummyDialog);
+  addPoi('gate', '深渊之门', '◇', [0, 4.3, -10.5], [0, -9.7], gateDialog);
+  const locations = [[-4.5, 4.7], [4.5, 7.9], [3.1, -6.5]];
   locations.forEach(([x, z], i) => {
     const crystal = group(townWorld, x, .55, z);
     crystal.userData.dynamic = true;
@@ -895,17 +895,17 @@ function createTown() {
 createTown();
 
 // ----------------------- DUNGEON I: THE FALLEN CHAPEL -----------------------
-const dungeonPlayerPos = new THREE.Vector3(0, .05, 9);
+const dungeonPlayerPos = new THREE.Vector3(0, .05, 12.2);
 const dungeonObstacles = [];
 const enemies = [];
 const projectiles = [];
-const dungeonExit = new THREE.Vector3(0, .05, -11);
+const dungeonExit = new THREE.Vector3(0, .05, -14);
 function dObstacle(x, z, w, d) { dungeonObstacles.push({ x, z, w: w / 2, d: d / 2 }); }
 function dungeonWalkable(x, z) {
-  if (x < -9.5 || x > 9.5 || z < -11.5 || z > 11.5) return false;
+  if (x < -13 || x > 13 || z < -14.2 || z > 14.2) return false;
   return !dungeonObstacles.some(o => Math.abs(x - o.x) < o.w + .32 && Math.abs(z - o.z) < o.d + .32);
 }
-const dungeonGrid = { min: -11, step: .4, count: 56 };
+const dungeonGrid = { min: -14.4, step: .4, count: 73 };
 function dGridIndex(x, z) {
   const gx = clamp(Math.round((x - dungeonGrid.min) / dungeonGrid.step), 0, dungeonGrid.count - 1);
   const gz = clamp(Math.round((z - dungeonGrid.min) / dungeonGrid.step), 0, dungeonGrid.count - 1);
@@ -915,58 +915,58 @@ const dungeonGridArray = Array.from({ length: dungeonGrid.count * dungeonGrid.co
 
 function createDungeon() {
   // Stone floor.
-  tiledFloor(dungeonWorld, 22, -.15);
+  tiledFloor(dungeonWorld, 30, -.15);
   // Outer walls.
   for (const side of [-1, 1]) {
-    for (let z = -11; z <= 11; z += 1.6) {
-      box(dungeonWorld, .6, 4.2, 1.4, 0x3a4138, side * 9.7, 2, z);
-      box(dungeonWorld, .5, .4, 1.6, 0x5a5541, side * 9.8, 4.1, z);
+    for (let z = -14.4; z <= 14.4; z += 1.6) {
+      box(dungeonWorld, .6, 4.2, 1.4, 0x3a4138, side * 13.5, 2, z);
+      box(dungeonWorld, .5, .4, 1.6, 0x5a5541, side * 13.6, 4.1, z);
     }
   }
-  for (let x = -9; x <= 9; x += 1.6) {
-    box(dungeonWorld, 1.6, 4.2, .6, 0x3a4138, x, 2, -11.3);
-    box(dungeonWorld, 1.6, .4, .5, 0x5a5541, x, 4.1, -11.3);
-    box(dungeonWorld, 1.6, 4.2, .6, 0x3a4138, x, 2, 11.3);
+  for (let x = -12.8; x <= 12.8; x += 1.6) {
+    box(dungeonWorld, 1.6, 4.2, .6, 0x3a4138, x, 2, -14.7);
+    box(dungeonWorld, 1.6, .4, .5, 0x5a5541, x, 4.1, -14.7);
+    box(dungeonWorld, 1.6, 4.2, .6, 0x3a4138, x, 2, 14.7);
   }
   // Central nave pillars.
   for (const side of [-1, 1]) {
-    for (const z of [-6, -2, 2, 6]) {
-      pillar(dungeonWorld, side * 3.6, z, 4.2);
-      dObstacle(side * 3.6, z, 1.1, 1.1);
+    for (const z of [-9, -3, 3, 9]) {
+      pillar(dungeonWorld, side * 4.8, z, 4.2);
+      dObstacle(side * 4.8, z, 1.1, 1.1);
     }
   }
   // Pews along the sides.
   for (const side of [-1, 1]) {
-    for (let z = -7; z <= 7; z += 2.4) {
-      const pew = box(dungeonWorld, 2.2, .55, .55, 0x3f3a2c, side * 6.8, .28, z);
-      dObstacle(side * 6.8, z, 2.2, .55);
+    for (let z = -10.5; z <= 10.5; z += 3) {
+      box(dungeonWorld, 2.2, .55, .55, 0x3f3a2c, side * 9.2, .28, z);
+      dObstacle(side * 9.2, z, 2.2, .55);
     }
   }
   // Rubble.
-  for (let i = 0; i < 18; i++) {
-    const x = (random() - .5) * 16, z = (random() - .5) * 18;
-    if (Math.abs(x) > 3 && Math.abs(x) < 6) continue;
+  for (let i = 0; i < 28; i++) {
+    const x = (random() - .5) * 24, z = (random() - .5) * 26;
+    if (Math.abs(x) > 4 && Math.abs(x) < 7.5) continue;
     const r = box(dungeonWorld, .2 + random() * .5, .12 + random() * .25, .2 + random() * .5, stoneColors[i % 6], x, .05, z);
     r.rotation.y = random() * TAU;
   }
   // Altar at the far end (boss dais).
-  const altar = group(dungeonWorld, 0, 0, -9.5);
+  const altar = group(dungeonWorld, 0, 0, -12.8);
   box(altar, 3, .6, 1.6, 0x4c4633, 0, .3);
   box(altar, 2.6, .25, 1.2, 0x6b6144, 0, .72);
   const altarFlame = mesh(altar, new THREE.OctahedronGeometry(.28), warmMaterial, 0, 1.1, 0, false);
   flames.push({ mesh: altarFlame, phase: 0, base: 2 });
-  const altarLight = new THREE.PointLight(0xff8a3c, 18, 9, 2); altarLight.position.set(0, 1.5, -9.5);
+  const altarLight = new THREE.PointLight(0xff8a3c, 18, 9, 2); altarLight.position.set(0, 1.5, -12.8);
   dungeonWorld.add(altarLight); flames.push({ light: altarLight, intensity: 18, phase: 0 });
-  dObstacle(0, -9.5, 3, 1.6);
+  dObstacle(0, -12.8, 3, 1.6);
   // Iron candelabras.
-  for (const [x, z] of [[-5, -9], [5, -9], [-5, 9], [5, 9]]) candelabra(dungeonWorld, x, z, 1.7, true);
+  for (const [x, z] of [[-7, -12], [7, -12], [-7, 12], [7, 12]]) candelabra(dungeonWorld, x, z, 1.7, true);
   // Exit marker (iron gate behind player).
-  const gate = group(dungeonWorld, 0, 0, 10.8);
+  const gate = group(dungeonWorld, 0, 0, 14.2);
   for (const x of [-1.3, 0, 1.3]) box(gate, .12, 3.2, .12, 0x444030, x, 1.6);
   box(gate, 3, .12, .16, 0x6b6144, 0, 3.1);
   // Fog and dust.
-  for (let i = 0; i < 4; i++) makeFog(dungeonWorld, 22, .12 + i * .3, .09);
-  motes.push(makeMotes(dungeonWorld, 70, 18, 0x9fb08a));
+  for (let i = 0; i < 4; i++) makeFog(dungeonWorld, 32, .12 + i * .3, .09);
+  motes.push(makeMotes(dungeonWorld, 105, 28, 0x9fb08a));
 }
 createDungeon();
 
@@ -1021,7 +1021,7 @@ function createEnemy(x, z) {
 }
 
 function spawnEnemies() {
-  const positions = [[-4, 0], [4, 0], [-3.5, -5], [3.5, -5]];
+  const positions = [[-5.8, 2], [5.8, 2], [-4.8, -6.5], [4.8, -6.5]];
   for (const [x, z] of positions) {
     const e = createEnemy(x, z);
     enemies.push(e);
@@ -1031,7 +1031,7 @@ function spawnEnemies() {
 function resetDungeon() {
   while (enemies.length) { const e = enemies.pop(); e.root.removeFromParent(); }
   spawnEnemies();
-  dungeonPlayerPos.set(0, .05, 9);
+  dungeonPlayerPos.set(0, .05, 12.2);
   playerYaw = Math.PI;
   for (const p of projectiles) p.mesh.removeFromParent();
   projectiles.length = 0;
@@ -1339,13 +1339,13 @@ const moveMarker = new THREE.Mesh(new THREE.RingGeometry(.18, .23, 20), mat(0xda
   transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false,
 }));
 moveMarker.rotation.x = -Math.PI / 2; moveMarker.visible = false; scene.add(moveMarker);
-const playerPosition = new THREE.Vector3(0, .05, 6.5);
+const playerPosition = new THREE.Vector3(0, .05, 10.5);
 let playerYaw = Math.PI;
 
 // A* grid with radius-expanded obstacles; diagonal corner-cutting is forbidden.
-const GRID_STEP = .4, GRID_MIN = -9.6, GRID_COUNT = 49, PLAYER_RADIUS = .29;
+const GRID_STEP = .4, GRID_MIN = -13.2, GRID_COUNT = 67, PLAYER_RADIUS = .29;
 function walkable(x, z) {
-  if (x < -9.3 || x > 9.3 || z < -9.5 || z > 9.1) return false;
+  if (x < -13 || x > 13 || z < -13 || z > 12.5) return false;
   return !obstacles.some(o => Math.abs(x - o.x) < o.w + PLAYER_RADIUS && Math.abs(z - o.z) < o.d + PLAYER_RADIUS);
 }
 function gridPoint(v) { return clamp(Math.round((v - GRID_MIN) / GRID_STEP), 0, GRID_COUNT - 1); }
@@ -1884,7 +1884,7 @@ function resize() {
 // Yaw rotates around the scene target. Distance controls zoom.
 const camPresets = {
   selection: { yaw: .3, pitch: .62, dist: 9, tx: 0, ty: 1.3, tz: 0 },
-  town: { yaw: .5, pitch: .75, dist: 22, tx: 0, ty: .9, tz: -1 },
+  town: { yaw: .5, pitch: .75, dist: 22, tx: 0, ty: 1.05, tz: 0 },
   dungeon: { yaw: 0, pitch: .95, dist: 14, tx: 0, ty: 1.1, tz: 0 },
   low: { pitchOffset: .55, distMul: .72 },
   classic: { pitchOffset: 0, distMul: 1 },
@@ -1906,9 +1906,9 @@ function updateCamera() {
   const p = camPresets[state.mode] || camPresets.town;
   let tx = p.tx, ty = p.ty, tz = p.tz;
   if (state.mode === 'town') {
-    tx += playerPosition.x * .35; tz += playerPosition.z * .35;
+    tx += playerPosition.x; ty += playerPosition.y; tz += playerPosition.z;
   } else if (state.mode === 'dungeon') {
-    tx += playerPosition.x * .5; tz += playerPosition.z * .5;
+    tx += dungeonPlayerPos.x; ty += dungeonPlayerPos.y; tz += dungeonPlayerPos.z;
   }
   cameraTarget.set(tx, ty, tz);
   const pitch = clamp(state.camPitch, .12, 1.48);
@@ -1964,16 +1964,17 @@ function animate(now) {
   const paused = $('#modal').open;
   if (!paused) state.time += dt;
   updateDayNight(paused ? 0 : dt);
-  updateCamera();
   if (state.mode === 'selection') { if (!paused) updateSelection(dt); }
   else if (state.mode === 'town') {
-    updateMovement(paused ? 0 : dt); updateLabels();
+    updateMovement(paused ? 0 : dt);
     if (!paused) for (const npc of townNpcs) npc.update(dt, state.time + 1, { type: 'idle' });
     $('#game').dataset.state = paused ? 'paused' : state.moving ? 'walking' : 'idle';
   } else {
     if (!paused) updateDungeon(dt);
     $('#game').dataset.state = paused ? 'paused' : state.attacking ? 'attack' : state.moving ? 'walking' : 'idle';
   }
+  updateCamera();
+  if (state.mode === 'town') updateLabels();
   if (!paused) updateAtmosphere(dt);
   renderer.render(scene, camera);
   if (firstFrame) {
@@ -1989,18 +1990,22 @@ renderer.domElement.addEventListener('webglcontextlost', event => {
 });
 // Read-only public diagnostics make integration and performance checks inspectable.
 window.abyss = Object.freeze({
-  getSnapshot: () => ({
-    mode: state.mode, phase: state.phase, selected: state.selected,
-    showcaseTime: +state.showcaseTime.toFixed(2),
-    visibleCharacters: Object.entries(characters).filter(([, character]) => character.root.visible).map(([id]) => id),
-    position: { x: +playerPosition.x.toFixed(2), z: +playerPosition.z.toFixed(2) },
-    moving: state.moving, pathLength: state.path.length, near: state.near?.id ?? null,
-    dayTime: +state.dayTime.toFixed(2), dayPaused: state.dayPaused, daySpeed: state.daySpeed,
-    attacking: state.mode === 'dungeon' ? state.attacking : false,
-    enemiesAlive: state.mode === 'dungeon' ? enemies.filter(e => e.hp > 0).length : 0,
-    enemies: state.mode === 'dungeon' ? enemies.map(e => ({ x: +e.root.position.x.toFixed(1), z: +e.root.position.z.toFixed(1), hp: e.hp, alive: e.alive })) : [],
-    save: structuredClone(save), audio: state.audio, storageAvailable,
-    renderer: { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles },
-  }),
+  getSnapshot: () => {
+    const activePosition = state.mode === 'dungeon' ? dungeonPlayerPos : playerPosition;
+    return {
+      mode: state.mode, phase: state.phase, selected: state.selected,
+      showcaseTime: +state.showcaseTime.toFixed(2),
+      visibleCharacters: Object.entries(characters).filter(([, character]) => character.root.visible).map(([id]) => id),
+      position: { x: +activePosition.x.toFixed(2), z: +activePosition.z.toFixed(2) },
+      cameraTarget: { x: +cameraTarget.x.toFixed(2), z: +cameraTarget.z.toFixed(2) },
+      moving: state.moving, pathLength: state.path.length, near: state.near?.id ?? null,
+      dayTime: +state.dayTime.toFixed(2), dayPaused: state.dayPaused, daySpeed: state.daySpeed,
+      attacking: state.mode === 'dungeon' ? state.attacking : false,
+      enemiesAlive: state.mode === 'dungeon' ? enemies.filter(e => e.hp > 0).length : 0,
+      enemies: state.mode === 'dungeon' ? enemies.map(e => ({ x: +e.root.position.x.toFixed(1), z: +e.root.position.z.toFixed(1), hp: e.hp, alive: e.alive })) : [],
+      save: structuredClone(save), audio: state.audio, storageAvailable,
+      renderer: { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles },
+    };
+  },
 });
 updateClassUI(); updateHud(); resize(); requestAnimationFrame(animate);

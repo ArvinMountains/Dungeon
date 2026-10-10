@@ -107,10 +107,14 @@
           <span id="dungeon-health-text">74 / 100</span>
           <button id="dungeon-potion" class="potion-slot" aria-label="使用生命药剂"><svg><use href="#i-flame"/></svg><b id="dungeon-potion-count">1</b></button>
         </div>
-        <div class="dungeon-help"><span><kbd>WASD</kbd> 移动</span><span><kbd>空格</kbd>/<kbd>J</kbd> 攻击</span><span>点击敌人锁定攻击</span><span><kbd>1</kbd> 药剂</span><span><kbd>E</kbd> 撤离回城</span></div>
+        <button id="dungeon-ultimate" class="ultimate-slot" aria-label="释放大招">
+          <kbd>Q</kbd><span><strong id="ultimate-name">月蚀箭雨</strong><small id="ultimate-cooldown">就绪</small></span>
+        </button>
+        <div class="dungeon-help"><span><kbd>WASD</kbd> 移动</span><span>鼠标索敌 · 左键攻击</span><span><kbd>空格</kbd>/<kbd>J</kbd> 攻击</span><span><kbd>Q</kbd> 大招</span><span><kbd>1</kbd> 药剂</span><span><kbd>E</kbd> 撤离</span></div>
         <button id="dungeon-exit" class="text-link">撤离圣堂 <span>↗</span></button>
       </div>
-      <button id="touch-attack" class="touch-attack" aria-label="攻击">攻</button>
+      <button id="touch-attack" class="touch-combat touch-attack" aria-label="攻击">攻</button>
+      <button id="touch-ultimate" class="touch-combat touch-ultimate" aria-label="释放大招">绝</button>
     </section>
 
     <div id="camera-rig" aria-label="视角控制台">

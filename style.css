@@ -252,8 +252,17 @@ kbd{font-family:var(--sans);font-size:8px;min-width:15px;display:inline-grid;pla
 .dungeon-vitals .potion-slot{position:relative;width:38px;height:38px;border:1px solid var(--line);display:grid;place-items:center}
 .dungeon-vitals .potion-slot svg{width:17px;height:17px;color:#c7ad7b}
 .dungeon-vitals .potion-slot b{position:absolute;right:3px;bottom:1px;font-family:Georgia,serif;font-size:9px;color:#d8bd86}
+.ultimate-slot{height:40px;min-width:132px;padding:0 10px;border:1px solid #8c7454;background:#171d18dd;color:#d8bd86;display:flex;align-items:center;gap:9px;text-align:left}
+.ultimate-slot:hover:not(:disabled){border-color:#d0aa6d;background:#253026}
+.ultimate-slot kbd{width:24px;height:24px;border:1px solid #9f865e;display:grid;place-items:center;font:12px Georgia,serif;color:#f0d39a}
+.ultimate-slot span{display:grid;gap:2px}
+.ultimate-slot strong{font:10px var(--serif);letter-spacing:1px;color:#ded3b9;white-space:nowrap}
+.ultimate-slot small{font-size:8px;letter-spacing:1px;color:#8fa58c}
+.ultimate-slot:disabled{opacity:.62;cursor:not-allowed}
+.ultimate-slot:disabled small{color:#b98468}
 .dungeon-help{display:flex;gap:14px;font-size:9px;color:#8b9384;letter-spacing:1px}
 .dungeon-help kbd{border:1px solid #6c6a5255;padding:1px 5px;font-family:Georgia,serif;margin-right:4px}
+@media(max-width:1150px){.dungeon-help{display:none}}
 /* ---------------- Hit flash & impact ---------------- */
 #hit-flash{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 45%,transparent 55%,rgba(120,20,18,.55));opacity:0;transition:opacity .12s;z-index:4}
 #hit-flash.show{opacity:1;transition:none}
@@ -262,12 +271,15 @@ kbd{font-family:var(--sans);font-size:8px;min-width:15px;display:inline-grid;pla
   .camera-grid button,.camera-zoom button{padding:8px 0}
   #dungeon-objective{top:96px}
   #dungeon-objective h2{font-size:20px;letter-spacing:5px}
-  #dungeon-bottom{left:6%;right:6%;bottom:60px;flex-direction:column;align-items:stretch;gap:8px}
+  #dungeon-bottom{left:6%;right:6%;bottom:60px;flex-direction:column;align-items:flex-start;gap:8px}
   .health-track.large{width:150px}
   .dungeon-help{display:none}
+  .ultimate-slot{min-width:120px}
   .clock-button{padding:4px 7px}
   .clock-button #clock-text{display:none}
 }
-.touch-attack{display:none;position:absolute;right:7%;bottom:168px;width:58px;height:58px;border:1px solid var(--gold);border-radius:50%;background:#3a2c1cdd;color:var(--gold-bright);font-size:16px;letter-spacing:1px;z-index:7}
-.touch-attack:active{background:#5a432a}
-@media(max-width:800px){.touch-attack.show{display:block}}
+.touch-combat{display:none;position:absolute;width:58px;height:58px;border-radius:50%;font-size:16px;letter-spacing:1px;z-index:7}
+.touch-attack{right:7%;bottom:168px;border:1px solid var(--gold);background:#3a2c1cdd;color:var(--gold-bright)}
+.touch-ultimate{right:calc(7% + 70px);bottom:198px;border:1px solid #7ea59b;background:#18312ddd;color:#a8ded2}
+.touch-combat:active{filter:brightness(1.35)}
+@media(max-width:800px){.touch-combat.show{display:block}}

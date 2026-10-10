@@ -78,7 +78,9 @@ const state = {
   path: [], destination: null, near: null, moving: false, walkPhase: 0, steps: 0,
   // Combat
   attacking: false, attackTime: 0, attackCooldown: 0, attackHit: false,
-  lockedEnemy: null,
+  attackTarget: null, attackRangeTime: 0, lockedEnemy: null, hoveredEnemy: null,
+  ultimateActive: false, ultimateTime: 0, ultimateCooldown: 0, ultimateHit: false,
+  ultimateTarget: new THREE.Vector3(), cameraShake: 0,
   // Day / night cycle (hours 0..24). 0.6 game-minutes per real-second.
   dayTime: 8, dayPaused: false, daySpeed: 1 / 100,
   // Free camera orbit around a target.
@@ -648,6 +650,54 @@ function createProceduralCharacter(id) {
         legs.left.thigh.rotation.z = .1 * impact;
         legs.right.thigh.rotation.z = -.1 * impact;
       }
+    } else if (pose.type === 'ultimate') {
+      const p = pose.time;
+      if (!warrior) {
+        // Moonfall Volley: raise the bow, draw toward the sky, then release.
+        const lift = smooth(p / .3) * (1 - smooth((p - 1.08) / .32));
+        const draw = smooth((p - .12) / .35) * (1 - smooth((p - .62) / .14));
+        const release = smooth((p - .62) / .1) * (1 - smooth((p - 1.02) / .24));
+        torso.rotation.y = -.2 * lift;
+        torso.rotation.x = -.12 * lift + .1 * release;
+        head.rotation.x = -.24 * lift;
+        arms.left.upper.rotation.z = .12 - 1.55 * lift;
+        arms.left.upper.rotation.x = -.42 * lift;
+        arms.left.lower.rotation.z = -.18 * lift;
+        arms.right.upper.rotation.z = -.92 * lift;
+        arms.right.upper.rotation.x = -.3 * lift;
+        arms.right.lower.rotation.z = -1.76 * draw;
+        weapon.rotation.z = .18 + 1.55 * lift;
+        weapon.rotation.x = .05 - .28 * lift;
+        weapon.position.y = lerp(-.02, .34, lift);
+        if (string) {
+          string.geometry.attributes.position.setX(1, draw * .62);
+          string.geometry.attributes.position.needsUpdate = true;
+        }
+        if (arrowMesh) {
+          arrowMesh.visible = draw > .05 && p < .68;
+          arrowMesh.position.x = -.66 + draw * .62;
+        }
+      } else {
+        // Emberquake: overhead wind-up followed by a two-handed ground slam.
+        const raise = smooth(p / .34);
+        const slam = smooth((p - .38) / .28);
+        const recover = 1 - smooth((p - .86) / .32);
+        const power = Math.min(raise, recover);
+        const impact = Math.max(0, 1 - Math.abs(p - .68) * 15);
+        arms.right.upper.rotation.x = -1.65 * power + 2.15 * slam * recover;
+        arms.right.upper.rotation.z = -.55 * power;
+        arms.right.lower.rotation.x = -.72 * power;
+        arms.left.upper.rotation.x = -1.25 * power + 1.6 * slam * recover;
+        arms.left.upper.rotation.z = .5 * power;
+        arms.left.lower.rotation.x = -.5 * power;
+        weapon.rotation.z = -.15 - 2.25 * power + 3.7 * slam * recover;
+        weapon.position.y += .2 * power - .25 * slam * recover;
+        torso.rotation.x = -.2 * power + .3 * impact;
+        torso.position.y -= .1 * impact;
+        head.rotation.x = -.12 * power + .15 * impact;
+        legs.left.thigh.rotation.z = .13 * power;
+        legs.right.thigh.rotation.z = -.13 * power;
+      }
     } else if (!warrior) {
       string.geometry.attributes.position.setX(1, 0); string.geometry.attributes.position.needsUpdate = true;
       arrowMesh.visible = false;
@@ -900,6 +950,24 @@ const dungeonObstacles = [];
 const enemies = [];
 const projectiles = [];
 const dungeonExit = new THREE.Vector3(0, .05, -14);
+const COMBAT_PROFILE = {
+  archer: { attackRange: 11.5, ultimateCastRange: 13.5, ultimateRadius: 4.2, ultimateCooldown: 10 },
+  warrior: { attackRange: 2.4, ultimateCastRange: 0, ultimateRadius: 5.5, ultimateCooldown: 10 },
+};
+const attackRangeMaterial = new THREE.MeshBasicMaterial({
+  color: 0xd8bd86, transparent: true, opacity: .42, depthWrite: false, side: THREE.DoubleSide,
+});
+const attackRangeMarker = new THREE.Mesh(new THREE.RingGeometry(.96, 1, 64), attackRangeMaterial);
+attackRangeMarker.rotation.x = -Math.PI / 2;
+attackRangeMarker.position.y = .035;
+attackRangeMarker.renderOrder = 4;
+attackRangeMarker.visible = false;
+attackRangeMarker.userData.dynamic = true;
+dungeonWorld.add(attackRangeMarker);
+const targetRingGeometry = new THREE.RingGeometry(.48, .64, 40);
+const targetRingMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff3f32, transparent: true, opacity: .9, depthWrite: false, side: THREE.DoubleSide,
+});
 function dObstacle(x, z, w, d) { dungeonObstacles.push({ x, z, w: w / 2, d: d / 2 }); }
 function dungeonWalkable(x, z) {
   if (x < -13 || x > 13 || z < -14.2 || z > 14.2) return false;
@@ -1008,9 +1076,15 @@ function createEnemy(x, z) {
   const hpBar = new THREE.Mesh(new THREE.PlaneGeometry(.86, .06), mat(0xe05a4a, { transparent: true, depthWrite: false }));
   hpBarBg.position.y = 2.35; hpBar.position.y = 2.35; hpBarBg.position.z = .35; hpBar.position.z = .36;
   root.add(hpBarBg, hpBar);
+  const targetRing = new THREE.Mesh(targetRingGeometry, targetRingMaterial);
+  targetRing.rotation.x = -Math.PI / 2;
+  targetRing.position.y = .035;
+  targetRing.renderOrder = 5;
+  targetRing.visible = false;
+  root.add(targetRing);
   root.userData.dynamic = true;
   const enemy = {
-    root, torso, arms, legs, head, hitMesh, eye, hpBar, hpBarBg,
+    root, torso, arms, legs, head, hitMesh, eye, hpBar, hpBarBg, targetRing,
     hp: 60, maxHp: 60, alive: true,
     position: root.position, yaw: 0, state: 'idle', stateTime: 0,
     attackCooldown: 0, hitFlash: 0,
@@ -1035,7 +1109,10 @@ function resetDungeon() {
   playerYaw = Math.PI;
   for (const p of projectiles) p.mesh.removeFromParent();
   projectiles.length = 0;
-  state.lockedEnemy = null;
+  state.lockedEnemy = null; state.hoveredEnemy = null; state.attackTarget = null;
+  state.attacking = false; state.attackRangeTime = 0;
+  state.ultimateActive = false; state.ultimateTime = 0; state.ultimateCooldown = 0; state.ultimateHit = false;
+  attackRangeMarker.visible = false;
   updateDungeonHud();
 }
 
@@ -1044,6 +1121,18 @@ function updateDungeonHud() {
   $('#dungeon-health-bar').style.width = `${save.hp}%`;
   $('#dungeon-health-text').textContent = `${save.hp} / 100`;
   $('#dungeon-potion-count').textContent = save.potions;
+  updateUltimateHud();
+}
+
+function updateUltimateHud() {
+  const archer = state.selected === 'archer';
+  const name = archer ? '月蚀箭雨' : '余烬震击';
+  const ready = state.ultimateCooldown <= 0 && !state.ultimateActive;
+  $('#ultimate-name').textContent = name;
+  $('#ultimate-cooldown').textContent = ready ? '就绪' : state.ultimateActive ? '释放中' : `${Math.ceil(state.ultimateCooldown)} 秒`;
+  $('#dungeon-ultimate').disabled = !ready;
+  $('#dungeon-ultimate').setAttribute('aria-label', `释放大招：${name}`);
+  $('#touch-ultimate').disabled = !ready;
 }
 
 function setDungeonPath(target) {
@@ -1054,27 +1143,70 @@ function setDungeonPath(target) {
   moveMarker.position.copy(target); moveMarker.position.y = .02; moveMarker.visible = true;
 }
 
-function lockEnemy(enemy) {
+function showAttackRange(range, color = 0xd8bd86, duration = .8) {
+  attackRangeMarker.position.set(dungeonPlayerPos.x, .035, dungeonPlayerPos.z);
+  attackRangeMarker.scale.setScalar(range);
+  attackRangeMarker.material.color.setHex(color);
+  attackRangeMarker.material.opacity = .42;
+  attackRangeMarker.userData.duration = duration;
+  attackRangeMarker.visible = true;
+  state.attackRangeTime = duration;
+}
+
+function clearEnemyLock() {
+  for (const enemy of enemies) enemy.targetRing.visible = false;
+  state.lockedEnemy = null;
+}
+
+function lockEnemy(enemy, notify = true) {
+  if (!enemy?.alive) return;
+  for (const candidate of enemies) candidate.targetRing.visible = candidate === enemy;
   state.lockedEnemy = enemy;
-  toast(`锁定：低语者`);
+  if (notify) toast('锁定：低语者 · 左键攻击');
 }
 
-function playerAttack() {
-  if (state.mode !== 'dungeon' || state.attacking || state.attackCooldown > 0 || state.switchingScene) return;
+function nearestEnemy(maxRange = Infinity, frontOnly = false) {
+  const forward = new THREE.Vector3(Math.sin(playerYaw), 0, Math.cos(playerYaw));
+  let best = null, bestDistance = maxRange;
+  for (const enemy of enemies) {
+    if (!enemy.alive) continue;
+    const to = enemy.root.position.clone().sub(dungeonPlayerPos); to.y = 0;
+    const distance = to.length();
+    if (distance > bestDistance || (frontOnly && to.normalize().dot(forward) < .15)) continue;
+    best = enemy; bestDistance = distance;
+  }
+  return best;
+}
+
+function playerAttack(target = state.lockedEnemy) {
+  if (state.mode !== 'dungeon' || state.switchingScene) return false;
+  const profile = COMBAT_PROFILE[state.selected];
+  showAttackRange(profile.attackRange, state.selected === 'archer' ? 0x9fcbb0 : 0xd8a35f);
+  if (state.attacking || state.ultimateActive || state.attackCooldown > 0) return false;
+  if (!target?.alive) target = state.selected === 'archer' ? nearestEnemy(profile.attackRange, true) : null;
+  if (target?.alive && target.root.position.distanceTo(dungeonPlayerPos) > profile.attackRange) {
+    toast(state.selected === 'archer' ? '目标超出弓箭射程' : '目标不在战锤攻击范围内');
+    return false;
+  }
+  state.attackTarget = target?.alive ? target : null;
   state.attacking = true; state.attackTime = 0; state.attackHit = false;
+  state.path = []; state.destination = null; moveMarker.visible = false;
   playTone(state.selected === 'archer' ? 520 : 90, .18);
+  return true;
 }
 
-function spawnArrow(from, target) {
+function spawnArrow(from, target, maxDistance) {
   const arrow = box(dungeonWorld, .7, .03, .03, 0xd7c594);
   arrow.position.copy(from);
   const dir = target.clone().sub(from); dir.y = 0;
   arrow.userData.dir = dir.normalize();
-  arrow.userData.life = 1.2;
   arrow.userData.damage = 14 + save.upgrade * 4;
   arrow.lookAt(from.clone().add(arrow.userData.dir));
   arrow.rotation.y += Math.PI / 2;
-  projectiles.push({ mesh: arrow, damage: arrow.userData.damage, life: 1.2, dir: arrow.userData.dir, from: 'player' });
+  projectiles.push({
+    mesh: arrow, damage: arrow.userData.damage, life: maxDistance / 18,
+    dir: arrow.userData.dir, from: 'player', kind: 'arrow',
+  });
 }
 
 function doPlayerDamage() {
@@ -1082,35 +1214,117 @@ function doPlayerDamage() {
   const damage = (archer ? 14 : 22) + save.upgrade * 4;
   if (archer) {
     const from = characters[state.selected].root.position.clone(); from.y = 1.3;
-    let target = state.lockedEnemy && state.lockedEnemy.alive ? state.lockedEnemy.root.position.clone() : null;
-    if (!target) {
-      // Fire in facing direction; find nearest enemy in front.
-      const fwd = new THREE.Vector3(Math.sin(playerYaw), 0, Math.cos(playerYaw));
-      let best = null, bestDot = .3;
-      for (const e of enemies) {
-        if (!e.alive) continue;
-        const to = e.root.position.clone().sub(from); to.y = 0;
-        const d = to.normalize().dot(fwd);
-        if (d > bestDot) { bestDot = d; best = e.root.position.clone(); }
-      }
-      target = best || from.clone().add(fwd.multiplyScalar(8));
-    }
+    const range = COMBAT_PROFILE.archer.attackRange;
+    const targetEnemy = state.attackTarget?.alive ? state.attackTarget : nearestEnemy(range, true);
+    const fwd = new THREE.Vector3(Math.sin(playerYaw), 0, Math.cos(playerYaw));
+    const target = targetEnemy ? targetEnemy.root.position.clone() : from.clone().add(fwd.multiplyScalar(range));
     target.y = 1.3;
-    spawnArrow(from, target);
+    spawnArrow(from, target, range);
   } else {
     // Melee arc in front.
     const fwd = new THREE.Vector3(Math.sin(playerYaw), 0, Math.cos(playerYaw));
     const origin = characters[state.selected].root.position.clone();
+    const range = COMBAT_PROFILE.warrior.attackRange;
     for (const e of enemies) {
       if (!e.alive) continue;
       const to = e.root.position.clone().sub(origin); to.y = 0;
       const dist = to.length();
-      if (dist < 2.1 && to.normalize().dot(fwd) > .2) damageEnemy(e, damage);
+      if (dist < range && to.normalize().dot(fwd) > .1) damageEnemy(e, damage);
     }
     // Ground impact puff.
     const puff = mesh(dungeonWorld, new THREE.SphereGeometry(.3, 6, 4), mat(0xb9a77a, { transparent: true, opacity: .5, depthWrite: false }),
       origin.x + fwd.x * 1.4, .2, origin.z + fwd.z * 1.4, false);
     puff.userData.life = .35; puff.userData.kind = 'puff'; projectiles.push({ mesh: puff, life: .35 });
+  }
+}
+
+function effectMaterial(color, opacity = .8) {
+  return new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+  });
+}
+
+function spawnEffectRing(position, color, maxRadius, duration = .7) {
+  const ring = new THREE.Mesh(new THREE.RingGeometry(.78, 1, 56), effectMaterial(color, .8));
+  ring.position.set(position.x, .05, position.z);
+  ring.rotation.x = -Math.PI / 2;
+  ring.scale.setScalar(.2);
+  ring.renderOrder = 6;
+  dungeonWorld.add(ring);
+  projectiles.push({ mesh: ring, life: duration, total: duration, kind: 'ultimateRing', maxRadius, dispose: true });
+}
+
+function playerUltimate() {
+  if (state.mode !== 'dungeon' || state.switchingScene || state.attacking || state.ultimateActive) return false;
+  if (state.ultimateCooldown > 0) {
+    toast(`大招冷却中 · ${Math.ceil(state.ultimateCooldown)} 秒`);
+    return false;
+  }
+  const archer = state.selected === 'archer';
+  const profile = COMBAT_PROFILE[state.selected];
+  let target = state.lockedEnemy?.alive ? state.lockedEnemy : nearestEnemy(profile.ultimateCastRange || Infinity);
+  if (archer && !target) { toast('月蚀箭雨需要一个目标'); return false; }
+  if (archer && target.root.position.distanceTo(dungeonPlayerPos) > profile.ultimateCastRange) {
+    showAttackRange(profile.ultimateCastRange, 0x79d3c4, 1);
+    toast('目标超出月蚀箭雨的施法范围');
+    return false;
+  }
+  state.ultimateTarget.copy(archer ? target.root.position : dungeonPlayerPos);
+  state.ultimateActive = true; state.ultimateTime = 0; state.ultimateHit = false;
+  state.ultimateCooldown = profile.ultimateCooldown;
+  state.path = []; state.destination = null; state.moving = false; moveMarker.visible = false;
+  showAttackRange(archer ? profile.ultimateCastRange : profile.ultimateRadius, archer ? 0x79d3c4 : 0xff9b4a, 1.05);
+  spawnEffectRing(state.ultimateTarget, archer ? 0x65c9ba : 0xff8b3d, profile.ultimateRadius, .72);
+  updateUltimateHud();
+  playTone(archer ? 420 : 72, .55, .08);
+  toast(archer ? '月蚀箭雨' : '余烬震击');
+  return true;
+}
+
+function doUltimateImpact() {
+  const archer = state.selected === 'archer';
+  const profile = COMBAT_PROFILE[state.selected];
+  const center = archer ? state.ultimateTarget.clone() : dungeonPlayerPos.clone();
+  const damage = (archer ? 34 : 46) + save.upgrade * (archer ? 5 : 6);
+  for (const enemy of enemies) {
+    if (enemy.alive && enemy.root.position.distanceTo(center) <= profile.ultimateRadius) damageEnemy(enemy, damage);
+  }
+  if (archer) {
+    const column = new THREE.Mesh(
+      new THREE.CylinderGeometry(.8, 1.5, 7, 16, 1, true),
+      effectMaterial(0x8de5d3, .32),
+    );
+    column.position.set(center.x, 3.5, center.z);
+    dungeonWorld.add(column);
+    projectiles.push({ mesh: column, life: .65, total: .65, kind: 'ultimateColumn', dispose: true });
+    for (let i = 0; i < 16; i++) {
+      const angle = random() * TAU, radius = Math.sqrt(random()) * profile.ultimateRadius;
+      const arrow = box(dungeonWorld, .035, 1.05, .035, 0xb7f0df,
+        center.x + Math.cos(angle) * radius, 5.5 + random() * 2.5, center.z + Math.sin(angle) * radius);
+      projectiles.push({ mesh: arrow, life: 1 + i * .025, delay: i * .025, kind: 'rainArrow', velocity: 15 + random() * 5 });
+    }
+    spawnEffectRing(center, 0x9ce8d6, profile.ultimateRadius, .65);
+    spawnEffectRing(center, 0xd8fff2, profile.ultimateRadius * .65, .45);
+    state.cameraShake = .16;
+    playTone(760, .45, .05);
+  } else {
+    spawnEffectRing(center, 0xff9a4f, profile.ultimateRadius, .7);
+    spawnEffectRing(center, 0xffcf75, profile.ultimateRadius * .72, .5);
+    for (let i = 0; i < 22; i++) {
+      const angle = i / 22 * TAU + random() * .18;
+      const ember = mesh(dungeonWorld, new THREE.OctahedronGeometry(.09 + random() * .08), effectMaterial(i % 2 ? 0xffa33d : 0xffd17a),
+        center.x, .15, center.z, false);
+      projectiles.push({
+        mesh: ember, life: .55 + random() * .35, total: .9, kind: 'ultimateEmber', dispose: true,
+        velocity: new THREE.Vector3(Math.cos(angle) * (4 + random() * 5), 2 + random() * 4, Math.sin(angle) * (4 + random() * 5)),
+      });
+    }
+    const light = new THREE.PointLight(0xff7a32, 38, 13, 2);
+    light.position.set(center.x, 1.2, center.z);
+    dungeonWorld.add(light);
+    projectiles.push({ mesh: light, life: .45, total: .45, kind: 'ultimateLight' });
+    state.cameraShake = .32;
+    playTone(65, .65, .12);
   }
 }
 
@@ -1128,7 +1342,10 @@ function damageEnemy(enemy, damage) {
     enemy.alive = false;
     enemy.root.visible = false;
     enemy.hitMesh.visible = false;
+    enemy.targetRing.visible = false;
     if (state.lockedEnemy === enemy) state.lockedEnemy = null;
+    if (state.hoveredEnemy === enemy) state.hoveredEnemy = null;
+    if (state.attackTarget === enemy) state.attackTarget = null;
     const left = enemies.filter(e => e.alive).length;
     updateDungeonHud();
     if (left === 0) {
@@ -1166,6 +1383,19 @@ function flashHit() {
 
 function updateDungeon(dt) {
   const active = characters[state.selected];
+  if (state.cameraShake > 0) state.cameraShake = Math.max(0, state.cameraShake - dt);
+  if (state.attackRangeTime > 0) {
+    state.attackRangeTime = Math.max(0, state.attackRangeTime - dt);
+    attackRangeMarker.position.set(dungeonPlayerPos.x, .035, dungeonPlayerPos.z);
+    attackRangeMarker.material.opacity = .42 * (state.attackRangeTime / (attackRangeMarker.userData.duration || .8));
+    attackRangeMarker.visible = true;
+  } else {
+    attackRangeMarker.visible = false;
+  }
+  if (state.ultimateCooldown > 0) {
+    state.ultimateCooldown = Math.max(0, state.ultimateCooldown - dt);
+    updateUltimateHud();
+  }
   // Player movement in dungeon.
   const velocity = new THREE.Vector3();
   const up = keys.has('w') || keys.has('arrowup'), down = keys.has('s') || keys.has('arrowdown');
@@ -1182,7 +1412,7 @@ function updateDungeon(dt) {
     if (dungeonPlayerPos.distanceTo(wp) < .12) state.path.shift();
     else velocity.subVectors(wp, dungeonPlayerPos);
   }
-  if (velocity.lengthSq() > .001 && !state.attacking) {
+  if (velocity.lengthSq() > .001 && !state.attacking && !state.ultimateActive) {
     const speed = CLASS_DATA[state.selected].walkSpeed * (keys.has('shift') ? 1.5 : 1);
     velocity.normalize().multiplyScalar(Math.min(speed * dt, state.path.length ? velocity.length() : Infinity));
     const nx = dungeonPlayerPos.x + velocity.x, nz = dungeonPlayerPos.z + velocity.z;
@@ -1203,9 +1433,26 @@ function updateDungeon(dt) {
     playerYaw += Math.atan2(Math.sin(targetYaw - playerYaw), Math.cos(targetYaw - playerYaw)) * Math.min(1, dt * 10);
   }
   active.root.rotation.y = playerYaw;
-  const pose = state.attacking ? { type: 'attack', time: state.attackTime }
+  const pose = state.ultimateActive ? { type: 'ultimate', time: state.ultimateTime }
+    : state.attacking ? { type: 'attack', time: state.attackTime }
     : state.moving ? { type: 'walk', step: state.walkPhase } : { type: 'idle' };
   active.update(dt, state.time, pose);
+
+  // Ultimate timeline.
+  if (state.ultimateActive) {
+    state.ultimateTime += dt;
+    const archer = state.selected === 'archer';
+    const hitTime = archer ? .68 : .68;
+    if (!state.ultimateHit && state.ultimateTime >= hitTime) {
+      state.ultimateHit = true;
+      doUltimateImpact();
+    }
+    if (state.ultimateTime >= (archer ? 1.35 : 1.2)) {
+      state.ultimateActive = false;
+      state.ultimateTime = 0;
+      updateUltimateHud();
+    }
+  }
 
   // Attack timeline.
   if (state.attacking) {
@@ -1218,6 +1465,7 @@ function updateDungeon(dt) {
     const duration = archer ? .85 : .8;
     if (state.attackTime >= duration) {
       state.attacking = false; state.attackCooldown = archer ? .15 : .25;
+      state.attackTarget = null;
     }
   } else if (state.attackCooldown > 0) {
     state.attackCooldown -= dt;
@@ -1264,13 +1512,17 @@ function updateDungeon(dt) {
     // Billboard HP bar.
     e.hpBarBg.lookAt(camera.position); e.hpBar.lookAt(camera.position);
     e.eye.intensity = e.state === 'attack' ? 8 : 5;
+    if (e.targetRing.visible) {
+      const pulse = 1 + Math.sin(state.time * 7) * .1;
+      e.targetRing.scale.setScalar(pulse);
+    }
   }
 
-  // Projectiles (arrows, sparks, puffs).
+  // Projectiles and ultimate effects.
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
     p.life -= dt;
-    if (p.dir && p.from === 'player') {
+    if (p.kind === 'arrow') {
       p.mesh.position.addScaledVector(p.dir, 18 * dt);
       p.mesh.rotation.z += dt * 30;
       for (const e of enemies) {
@@ -1280,11 +1532,41 @@ function updateDungeon(dt) {
           p.life = 0; break;
         }
       }
+    } else if (p.kind === 'ultimateRing') {
+      const progress = clamp(1 - p.life / p.total, 0, 1);
+      p.mesh.scale.setScalar(lerp(.2, p.maxRadius, smooth(progress)));
+      p.mesh.material.opacity = Math.max(0, p.life / p.total) * .8;
+    } else if (p.kind === 'ultimateColumn') {
+      const ratio = Math.max(0, p.life / p.total);
+      p.mesh.material.opacity = ratio * .32;
+      p.mesh.scale.x = p.mesh.scale.z = 1 + (1 - ratio) * .45;
+    } else if (p.kind === 'rainArrow') {
+      p.delay -= dt;
+      p.mesh.visible = p.delay <= 0;
+      if (p.delay <= 0) {
+        p.mesh.position.y -= p.velocity * dt;
+        if (p.mesh.position.y <= .08) p.life = 0;
+      }
+    } else if (p.kind === 'ultimateEmber') {
+      p.mesh.position.addScaledVector(p.velocity, dt);
+      p.velocity.y -= 8 * dt;
+      p.mesh.rotation.x += dt * 9;
+      p.mesh.rotation.z += dt * 7;
+      p.mesh.material.opacity = Math.max(0, p.life / p.total);
+    } else if (p.kind === 'ultimateLight') {
+      p.mesh.intensity = 38 * Math.max(0, p.life / p.total);
     } else if (p.mesh.userData.kind === 'spark' || p.mesh.userData.kind === 'puff') {
       p.mesh.scale.multiplyScalar(1 + dt * 6);
       p.mesh.material.opacity = Math.max(0, p.life / .35);
     }
-    if (p.life <= 0) { p.mesh.removeFromParent(); projectiles.splice(i, 1); }
+    if (p.life <= 0) {
+      p.mesh.removeFromParent();
+      if (p.dispose && p.mesh.isMesh) {
+        p.mesh.geometry.dispose();
+        p.mesh.material.dispose();
+      }
+      projectiles.splice(i, 1);
+    }
   }
 }
 
@@ -1297,6 +1579,8 @@ function exitDungeon() {
 $('#dungeon-exit').addEventListener('click', exitDungeon);
 $('#dungeon-potion').addEventListener('click', usePotion);
 $('#touch-attack').addEventListener('click', playerAttack);
+$('#dungeon-ultimate').addEventListener('click', playerUltimate);
+$('#touch-ultimate').addEventListener('click', playerUltimate);
 
 // Make the town gate open the dungeon once the ember quest is complete.
 
@@ -1555,7 +1839,8 @@ function changeScene(mode) {
   sceneTimeout = setTimeout(() => {
     state.mode = mode; state.phase = 'idle'; state.pending = null;
     state.attacking = false; state.attackTime = 0; state.attackCooldown = 0; state.attackHit = false;
-    state.lockedEnemy = null;
+    state.attackTarget = null; state.attackRangeTime = 0; state.lockedEnemy = null; state.hoveredEnemy = null;
+    state.ultimateActive = false; state.ultimateTime = 0; state.ultimateHit = false; state.cameraShake = 0;
     const world = mode === 'town' ? townWorld : mode === 'dungeon' ? dungeonWorld : selectionWorld;
     for (const [id, character] of Object.entries(characters)) {
       character.setOpacity(1); character.root.visible = id === state.selected;
@@ -1581,14 +1866,14 @@ function changeScene(mode) {
     $('#footer-place').textContent = mode === 'town' ? '灰烬庇护所 · 本地存档' : mode === 'dungeon' ? '废弃圣堂 · 第一关' : '遗忘圣堂';
     $('#animation-status').textContent = '待机 · 呼吸';
     $('#character-info').classList.remove('changing');
-    $('.touch-attack').classList.toggle('show', mode === 'dungeon');
+    $$('.touch-combat').forEach(button => button.classList.toggle('show', mode === 'dungeon'));
     if (mode === 'dungeon') resetDungeon();
     resetCamera(mode);
     resize(); updateHud();
     $('#scene-transition').classList.remove('cover');
     state.switchingScene = false;
     if (mode === 'town') toast('欢迎来到灰烬庇护所。点击地面或使用 WASD 移动。');
-    if (mode === 'dungeon') toast('废弃圣堂：清除所有低语者。空格 / J 攻击。');
+    if (mode === 'dungeon') toast('移动鼠标索敌 · 左键攻击 · Q 释放大招');
   }, 460);
 }
 function updateHud() {
@@ -1707,7 +1992,7 @@ function mapDialog() {
   }
 }
 function helpDialog() {
-  openDialog('黑暗中的指引', `<div class="help-row"><span>切换职业 / 使用药剂</span><span><kbd>1</kbd> <kbd>2</kbd></span></div><div class="help-row"><span>城中行走</span><span><kbd>W A S D</kbd> / <kbd>↑ ↓ ← →</kbd></span></div><div class="help-row"><span>奔跑 / 与附近目标交互</span><span><kbd>Shift</kbd> / <kbd>E</kbd></span></div><div class="help-row"><span>行囊 / 城镇地图</span><span><kbd>B</kbd> / <kbd>M</kbd></span></div><div class="help-row"><span>关闭窗口 / 暂停</span><span><kbd>Esc</kbd></span></div><p style="margin-top:17px">拖动职业场景旋转角色。主城中点击地面行走，点击地标可自动前往并交互。</p><label class="setting-row">画面像素密度 <select id="quality-setting"><option value="pixel">经典像素</option><option value="fine">精细像素</option></select></label>`, [{ label: '回到旅途', run: closeDialog }], 'A GUIDE FOR THE WANDERER');
+  openDialog('黑暗中的指引', `<div class="help-row"><span>切换职业 / 使用药剂</span><span><kbd>1</kbd> <kbd>2</kbd></span></div><div class="help-row"><span>城中行走</span><span><kbd>W A S D</kbd> / <kbd>↑ ↓ ← →</kbd></span></div><div class="help-row"><span>奔跑 / 与附近目标交互</span><span><kbd>Shift</kbd> / <kbd>E</kbd></span></div><div class="help-row"><span>地下城索敌 / 攻击</span><span>鼠标 / <kbd>左键</kbd></span></div><div class="help-row"><span>普通攻击 / 大招</span><span><kbd>空格 J</kbd> / <kbd>Q</kbd></span></div><div class="help-row"><span>行囊 / 城镇地图</span><span><kbd>B</kbd> / <kbd>M</kbd></span></div><div class="help-row"><span>关闭窗口 / 暂停</span><span><kbd>Esc</kbd></span></div><p style="margin-top:17px">拖动画面旋转视角。主城点击地面寻路；地下城移动鼠标锁定敌人，红圈表示当前目标，左键发动一次攻击。</p><label class="setting-row">画面像素密度 <select id="quality-setting"><option value="pixel">经典像素</option><option value="fine">精细像素</option></select></label>`, [{ label: '回到旅途', run: closeDialog }], 'A GUIDE FOR THE WANDERER');
   $('#quality-setting').value = save.quality;
   $('#quality-setting').addEventListener('change', e => { save.quality = e.target.value; persist(); resize(); });
 }
@@ -1790,7 +2075,7 @@ window.addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
   if ($('#modal').open) return;
-  if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright',' ','shift','j'].includes(key)) event.preventDefault();
+  if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright',' ','shift','j','q'].includes(key)) event.preventDefault();
   if (event.repeat && !['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift'].includes(key)) return;
   keys.add(key);
   if (state.switchingScene) return;
@@ -1805,6 +2090,7 @@ window.addEventListener('keydown', event => {
     if (key === 'm') mapDialog();
   } else if (state.mode === 'dungeon') {
     if (key === ' ' || key === 'j') playerAttack();
+    if (key === 'q') playerUltimate();
     if (key === '1') usePotion();
     if (key === 'e') exitDungeon();
   }
@@ -1822,13 +2108,31 @@ $$('[data-move]').forEach(button => {
 const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
 const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let drag = null;
+function setPointerRay(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+}
+function enemyAtPointer(event) {
+  setPointerRay(event);
+  const hits = raycaster.intersectObjects(enemies.filter(enemy => enemy.alive).map(enemy => enemy.hitMesh), false);
+  return hits[0]?.object.userData.enemy ?? null;
+}
 renderer.domElement.addEventListener('pointerdown', event => {
   if (event.button !== 0 && event.button !== 2) return;
   drag = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, distance: 0 };
   renderer.domElement.setPointerCapture(event.pointerId);
 });
 renderer.domElement.addEventListener('pointermove', event => {
-  if (!drag) return;
+  if (!drag) {
+    if (state.mode === 'dungeon' && !$('#modal').open) {
+      const enemy = enemyAtPointer(event);
+      state.hoveredEnemy = enemy;
+      renderer.domElement.style.cursor = enemy ? 'crosshair' : '';
+      if (enemy) lockEnemy(enemy, false);
+    }
+    return;
+  }
   const dx = event.clientX - drag.lastX, dy = event.clientY - drag.lastY;
   drag.distance += Math.abs(dx) + Math.abs(dy);
   if (!$('#modal').open) {
@@ -1841,19 +2145,19 @@ renderer.domElement.addEventListener('pointerup', event => {
   const wasClick = drag && drag.distance < 7;
   if (wasClick && !$('#modal').open && !state.switchingScene) {
     if (state.mode === 'town') {
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
-      raycaster.setFromCamera(pointer, camera);
+      setPointerRay(event);
       const target = new THREE.Vector3();
       if (raycaster.ray.intersectPlane(ground, target)) setPath(target);
     } else if (state.mode === 'dungeon') {
-      // Click an enemy to lock-on; otherwise move toward the point.
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
-      raycaster.setFromCamera(pointer, camera);
-      const hits = raycaster.intersectObjects(enemies.filter(e => e.alive).map(e => e.hitMesh), false);
-      if (hits.length) lockEnemy(hits[0].object.userData.enemy);
+      // Hover selects; clicking a selected enemy performs one attack.
+      const enemy = enemyAtPointer(event);
+      if (enemy) {
+        lockEnemy(enemy, false);
+        playerAttack(enemy);
+      }
       else {
+        clearEnemyLock();
+        setPointerRay(event);
         const target = new THREE.Vector3();
         if (raycaster.ray.intersectPlane(ground, target)) setDungeonPath(target);
       }
@@ -1862,7 +2166,11 @@ renderer.domElement.addEventListener('pointerup', event => {
   drag = null;
 });
 renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
-renderer.domElement.addEventListener('pointercancel', () => { drag = null; });
+renderer.domElement.addEventListener('pointerleave', () => {
+  state.hoveredEnemy = null;
+  renderer.domElement.style.cursor = '';
+});
+renderer.domElement.addEventListener('pointercancel', () => { drag = null; state.hoveredEnemy = null; });
 renderer.domElement.addEventListener('wheel', event => {
   event.preventDefault();
   state.camDist = clamp(state.camDist * (1 + Math.sign(event.deltaY) * .12), 4, 55);
@@ -1903,6 +2211,7 @@ function setCamPreset(name) {
 }
 function updateCamera() {
   const breath = reducedMotion ? 0 : Math.sin(state.time * .45) * .06;
+  const shake = reducedMotion ? 0 : state.cameraShake;
   const p = camPresets[state.mode] || camPresets.town;
   let tx = p.tx, ty = p.ty, tz = p.tz;
   if (state.mode === 'town') {
@@ -1916,7 +2225,11 @@ function updateCamera() {
   const x = Math.sin(state.camYaw) * Math.cos(pitch) * dist;
   const y = Math.sin(pitch) * dist + breath;
   const z = Math.cos(state.camYaw) * Math.cos(pitch) * dist;
-  camera.position.set(tx + x, ty + y, tz + z);
+  camera.position.set(
+    tx + x + Math.sin(state.time * 83) * shake,
+    ty + y + Math.sin(state.time * 71) * shake * .45,
+    tz + z + Math.cos(state.time * 79) * shake,
+  );
   camera.lookAt(cameraTarget);
   camera.updateMatrixWorld();
 }
@@ -2001,8 +2314,14 @@ window.abyss = Object.freeze({
       moving: state.moving, pathLength: state.path.length, near: state.near?.id ?? null,
       dayTime: +state.dayTime.toFixed(2), dayPaused: state.dayPaused, daySpeed: state.daySpeed,
       attacking: state.mode === 'dungeon' ? state.attacking : false,
+      attackRangeVisible: state.mode === 'dungeon' && attackRangeMarker.visible,
+      lockedEnemy: state.mode === 'dungeon' && state.lockedEnemy?.alive ? enemies.indexOf(state.lockedEnemy) : null,
+      ultimateActive: state.mode === 'dungeon' ? state.ultimateActive : false,
+      ultimateCooldown: state.mode === 'dungeon' ? +state.ultimateCooldown.toFixed(2) : 0,
       enemiesAlive: state.mode === 'dungeon' ? enemies.filter(e => e.hp > 0).length : 0,
       enemies: state.mode === 'dungeon' ? enemies.map(e => ({ x: +e.root.position.x.toFixed(1), z: +e.root.position.z.toFixed(1), hp: e.hp, alive: e.alive })) : [],
+      targetRings: state.mode === 'dungeon' ? enemies.map(e => e.targetRing.visible) : [],
+      effects: state.mode === 'dungeon' ? [...new Set(projectiles.map(p => p.kind || p.mesh.userData.kind).filter(Boolean))] : [],
       save: structuredClone(save), audio: state.audio, storageAvailable,
       renderer: { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles },
     };

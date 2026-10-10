@@ -1087,7 +1087,8 @@ function createEnemy(x, z) {
     root, torso, arms, legs, head, hitMesh, eye, hpBar, hpBarBg, targetRing,
     hp: 60, maxHp: 60, alive: true,
     position: root.position, yaw: 0, state: 'idle', stateTime: 0,
-    attackCooldown: 0, hitFlash: 0,
+    attackCooldown: 0, hitFlash: 0, hitStun: 0, hitStunDuration: .22,
+    knockback: new THREE.Vector3(),
   };
   hitMesh.userData.enemy = enemy;
   dungeonWorld.add(root);
@@ -1229,7 +1230,7 @@ function doPlayerDamage() {
       if (!e.alive) continue;
       const to = e.root.position.clone().sub(origin); to.y = 0;
       const dist = to.length();
-      if (dist < range && to.normalize().dot(fwd) > .1) damageEnemy(e, damage);
+      if (dist < range && to.normalize().dot(fwd) > .1) damageEnemy(e, damage, origin, 5.5);
     }
     // Ground impact puff.
     const puff = mesh(dungeonWorld, new THREE.SphereGeometry(.3, 6, 4), mat(0xb9a77a, { transparent: true, opacity: .5, depthWrite: false }),
@@ -1244,14 +1245,14 @@ function effectMaterial(color, opacity = .8) {
   });
 }
 
-function spawnEffectRing(position, color, maxRadius, duration = .7) {
+function spawnEffectRing(position, color, maxRadius, duration = .7, kind = 'ultimateRing') {
   const ring = new THREE.Mesh(new THREE.RingGeometry(.78, 1, 56), effectMaterial(color, .8));
   ring.position.set(position.x, .05, position.z);
   ring.rotation.x = -Math.PI / 2;
   ring.scale.setScalar(.2);
   ring.renderOrder = 6;
   dungeonWorld.add(ring);
-  projectiles.push({ mesh: ring, life: duration, total: duration, kind: 'ultimateRing', maxRadius, dispose: true });
+  projectiles.push({ mesh: ring, life: duration, total: duration, kind, maxRadius, dispose: true });
 }
 
 function playerUltimate() {
@@ -1287,7 +1288,9 @@ function doUltimateImpact() {
   const center = archer ? state.ultimateTarget.clone() : dungeonPlayerPos.clone();
   const damage = (archer ? 34 : 46) + save.upgrade * (archer ? 5 : 6);
   for (const enemy of enemies) {
-    if (enemy.alive && enemy.root.position.distanceTo(center) <= profile.ultimateRadius) damageEnemy(enemy, damage);
+    if (enemy.alive && enemy.root.position.distanceTo(center) <= profile.ultimateRadius) {
+      damageEnemy(enemy, damage, archer ? dungeonPlayerPos : center, archer ? 3.2 : 8);
+    }
   }
   if (archer) {
     const column = new THREE.Mesh(
@@ -1328,11 +1331,44 @@ function doUltimateImpact() {
   }
 }
 
-function damageEnemy(enemy, damage) {
+function spawnHitEffect(enemy, direction, force) {
+  const color = state.selected === 'archer' ? 0x9fe7cf : 0xffb15b;
+  const center = enemy.root.position.clone();
+  spawnEffectRing(center, color, .72 + force * .045, .25, 'hitRing');
+  for (let i = 0; i < 8; i++) {
+    const angle = random() * TAU;
+    const shard = mesh(
+      dungeonWorld,
+      new THREE.OctahedronGeometry(.045 + random() * .055),
+      effectMaterial(i % 2 ? color : 0xffe0a0),
+      center.x, .75 + random() * .75, center.z, false,
+    );
+    const radial = new THREE.Vector3(Math.cos(angle), .35 + random() * .8, Math.sin(angle));
+    const velocity = radial.multiplyScalar(1.7 + random() * 2.2).addScaledVector(direction, 2.2 + force * .22);
+    projectiles.push({ mesh: shard, life: .32, total: .32, kind: 'hitShard', velocity, dispose: true });
+  }
+  const flash = mesh(
+    dungeonWorld,
+    new THREE.SphereGeometry(.22, 6, 4),
+    effectMaterial(0xfff0c0, .8),
+    center.x, 1.1, center.z, false,
+  );
+  projectiles.push({ mesh: flash, life: .16, total: .16, kind: 'hitBurst', dispose: true });
+}
+
+function damageEnemy(enemy, damage, source = dungeonPlayerPos, force = 3.5) {
   if (!enemy.alive) return;
+  const direction = enemy.root.position.clone().sub(source); direction.y = 0;
+  if (direction.lengthSq() < .01) direction.set(Math.sin(playerYaw), 0, Math.cos(playerYaw));
+  direction.normalize();
+  enemy.knockback.copy(direction).multiplyScalar(force);
+  enemy.hitStun = .18 + Math.min(force * .018, .16);
+  enemy.hitStunDuration = enemy.hitStun;
   enemy.hp -= damage; enemy.hitFlash = .18;
   enemy.hpBar.scale.x = Math.max(0, enemy.hp / enemy.maxHp);
   enemy.hpBar.position.x = -(1 - enemy.hpBar.scale.x) * .43;
+  spawnHitEffect(enemy, direction, force);
+  state.cameraShake = Math.max(state.cameraShake, Math.min(.13, .025 + force * .012));
   // Hit spark.
   const spark = mesh(dungeonWorld, new THREE.OctahedronGeometry(.16), mat(0xffcf6a, { emissive: 0xffb347, emissiveIntensity: 2, transparent: true, opacity: .9, depthWrite: false }),
     enemy.root.position.x, 1.4 + Math.random() * .3, enemy.root.position.z, false);
@@ -1477,12 +1513,36 @@ function updateDungeon(dt) {
     e.stateTime += dt;
     e.attackCooldown -= dt;
     if (e.hitFlash > 0) e.hitFlash -= dt;
+    if (e.hitStun > 0) e.hitStun = Math.max(0, e.hitStun - dt);
+    e.torso.rotation.x = .32;
+    e.arms.left.upper.rotation.z = 0;
+    e.arms.right.upper.rotation.z = 0;
+    if (e.knockback.lengthSq() > .0025) {
+      const step = e.knockback.clone().multiplyScalar(dt);
+      const nx = e.root.position.x + step.x, nz = e.root.position.z + step.z;
+      if (dungeonWalkable(nx, e.root.position.z)) e.root.position.x = nx;
+      else e.knockback.x = 0;
+      if (dungeonWalkable(e.root.position.x, nz)) e.root.position.z = nz;
+      else e.knockback.z = 0;
+      e.knockback.multiplyScalar(Math.exp(-9 * dt));
+    } else {
+      e.knockback.set(0, 0, 0);
+    }
     const toPlayer = dungeonPlayerPos.clone().sub(e.root.position); toPlayer.y = 0;
     const dist = toPlayer.length();
     const targetYaw = Math.atan2(toPlayer.x, toPlayer.z);
     e.yaw += Math.atan2(Math.sin(targetYaw - e.yaw), Math.cos(targetYaw - e.yaw)) * Math.min(1, dt * 6);
     e.root.rotation.y = e.yaw;
-    if (dist > 1.6) {
+    if (e.hitStun > 0) {
+      const recoil = e.hitStun / e.hitStunDuration;
+      e.state = 'hit';
+      e.attackCooldown = Math.max(e.attackCooldown, .3);
+      e.torso.rotation.x = .32 - recoil * .48;
+      e.arms.left.upper.rotation.x = .75 * recoil;
+      e.arms.right.upper.rotation.x = .75 * recoil;
+      e.arms.left.upper.rotation.z = -.35 * recoil;
+      e.arms.right.upper.rotation.z = .35 * recoil;
+    } else if (dist > 1.6) {
       const step = Math.min(1.4 * dt, dist - 1.4);
       toPlayer.normalize().multiplyScalar(step);
       const nx = e.root.position.x + toPlayer.x, nz = e.root.position.z + toPlayer.z;
@@ -1528,11 +1588,12 @@ function updateDungeon(dt) {
       for (const e of enemies) {
         if (!e.alive) continue;
         if (p.mesh.position.distanceTo(e.root.position.clone().setY(p.mesh.position.y)) < 1.0) {
-          damageEnemy(e, p.damage);
+          const impactSource = e.root.position.clone().addScaledVector(p.dir, -1);
+          damageEnemy(e, p.damage, impactSource, 3.8);
           p.life = 0; break;
         }
       }
-    } else if (p.kind === 'ultimateRing') {
+    } else if (p.kind === 'ultimateRing' || p.kind === 'hitRing') {
       const progress = clamp(1 - p.life / p.total, 0, 1);
       p.mesh.scale.setScalar(lerp(.2, p.maxRadius, smooth(progress)));
       p.mesh.material.opacity = Math.max(0, p.life / p.total) * .8;
@@ -1553,6 +1614,16 @@ function updateDungeon(dt) {
       p.mesh.rotation.x += dt * 9;
       p.mesh.rotation.z += dt * 7;
       p.mesh.material.opacity = Math.max(0, p.life / p.total);
+    } else if (p.kind === 'hitShard') {
+      p.mesh.position.addScaledVector(p.velocity, dt);
+      p.velocity.y -= 9 * dt;
+      p.mesh.rotation.x += dt * 14;
+      p.mesh.rotation.z += dt * 11;
+      p.mesh.material.opacity = Math.max(0, p.life / p.total);
+    } else if (p.kind === 'hitBurst') {
+      const progress = clamp(1 - p.life / p.total, 0, 1);
+      p.mesh.scale.setScalar(1 + progress * 2.4);
+      p.mesh.material.opacity = Math.max(0, p.life / p.total) * .8;
     } else if (p.kind === 'ultimateLight') {
       p.mesh.intensity = 38 * Math.max(0, p.life / p.total);
     } else if (p.mesh.userData.kind === 'spark' || p.mesh.userData.kind === 'puff') {
@@ -2319,7 +2390,10 @@ window.abyss = Object.freeze({
       ultimateActive: state.mode === 'dungeon' ? state.ultimateActive : false,
       ultimateCooldown: state.mode === 'dungeon' ? +state.ultimateCooldown.toFixed(2) : 0,
       enemiesAlive: state.mode === 'dungeon' ? enemies.filter(e => e.hp > 0).length : 0,
-      enemies: state.mode === 'dungeon' ? enemies.map(e => ({ x: +e.root.position.x.toFixed(1), z: +e.root.position.z.toFixed(1), hp: e.hp, alive: e.alive })) : [],
+      enemies: state.mode === 'dungeon' ? enemies.map(e => ({
+        x: +e.root.position.x.toFixed(2), z: +e.root.position.z.toFixed(2), hp: e.hp, alive: e.alive,
+        hitStun: +e.hitStun.toFixed(2), knockback: +e.knockback.length().toFixed(2),
+      })) : [],
       targetRings: state.mode === 'dungeon' ? enemies.map(e => e.targetRing.visible) : [],
       effects: state.mode === 'dungeon' ? [...new Set(projectiles.map(p => p.kind || p.mesh.userData.kind).filter(Boolean))] : [],
       save: structuredClone(save), audio: state.audio, storageAvailable,

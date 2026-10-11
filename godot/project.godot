@@ -1,0 +1,55 @@
+; Engine configuration file.
+; Lost Abyss - Godot 4.7.2 port of the three.js original.
+; 2.5D pixel-styled dark-fantasy prototype: selection stage, town, dungeon.
+
+config_version=5
+
+[application]
+
+config/name="失落的深渊 · The Lost Abyss"
+config/version="0.2.0"
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+config/icon="res://assets/icon.svg"
+
+[autoload]
+
+GameState="*res://scripts/GameState.gd"
+AudioBus="*res://scripts/AudioBus.gd"
+
+[display]
+
+window/size/viewport_width=1440
+window/size/viewport_height=900
+window/size/window_width_override=1440
+window/size/window_height_override=900
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[input]
+
+move_up={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":87},{"type":"InputEventKey","physical_keycode":4194320}]}
+move_down={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":83},{"type":"InputEventKey","physical_keycode":4194322}]}
+move_left={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":65},{"type":"InputEventKey","physical_keycode":4194319}]}
+move_right={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":68},{"type":"InputEventKey","physical_keycode":4194321}]}
+run={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":4194325}]}
+interact={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":69}]}
+attack={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":32},{"type":"InputEventKey","physical_keycode":74}]}
+ultimate={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":81}]}
+use_potion={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":49}]}
+open_bag={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":66}]}
+open_map={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":77}]}
+class_1={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":49}]}
+class_2={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":50}]}
+ui_cancel_custom={"deadzone":0.5,"events":[{"type":"InputEventKey","physical_keycode":4194305}]}
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+textures/canvas_textures/default_texture_filter=0
+anti_aliasing/quality/msaa_3d=0
+anti_aliasing/quality/screen_space_aa=0
+
+[internationalization]
+
+locale/translations=PackedStringArray()

@@ -142,42 +142,6 @@ static func candelabra(parent: Node3D, x: float, z: float, height: float = 1.6, 
 		pl.omni_range = 7.0
 		c.add_child(pl)
 
-static func make_fog(parent: Node3D, size: float, y: float, opacity: float, seed: int = 741) -> MeshInstance3D:
-	_rng.seed = seed
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(size, size)
-	var m := ShaderMaterial.new()
-	m.shader = load("res://shaders/fog.gdshader") if ResourceLoader.exists("res://shaders/fog.gdshader") else _make_fog_shader()
-	m.set_shader_parameter("opacity", opacity)
-	m.set_shader_parameter("tint", Color(0.51,0.59,0.50))
-	var mi := MeshInstance3D.new()
-	mi.mesh = plane
-	mi.material_override = m
-	mi.position = Vector3(0, y, 0)
-	mi.rotation.x = -PI / 2
-	mi.rotation.z = _rng.randf()
-	parent.add_child(mi)
-	return mi
-
-static func _make_fog_shader() -> Shader:
-	var s := Shader.new()
-	s.code = """
-shader_type spatial;
-render_mode unshaded, depth_draw_never, cull_disabled;
-uniform float time: hint_range(0.0, 100.0) = 0.0;
-uniform float opacity: hint_range(0.0, 1.0) = 0.1;
-uniform vec3 tint: source_color = vec3(0.51,0.59,0.50);
-float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-	return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),f.x),mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0,1.0)),f.x),f.y);}
-void fragment(){
-	vec2 p=UV*7.0+vec2(TIME*0.018,TIME*0.009);
-	float n=noise(p)*0.65+noise(p*2.1)*0.35;
-	float edge=smoothstep(0.0,0.18,UV.x)*smoothstep(0.0,0.18,1.0-UV.x)*smoothstep(0.0,0.18,UV.y)*smoothstep(0.0,0.18,1.0-UV.y);
-	ALBEDO=tint; ALPHA=smoothstep(0.24,0.8,n)*opacity*edge;}
-"""
-	return s
-
 static func make_motes(parent: Node3D, count: int, radius: float, col: Color) -> GPUParticles3D:
 	var gp := GPUParticles3D.new()
 	gp.amount = count

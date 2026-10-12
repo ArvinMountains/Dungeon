@@ -1,682 +1,945 @@
 class_name TownWorld
 extends Node3D
-## 主城「灰烬庇护所」：A*寻路、6 设施交互、委托任务链、经济。
-## 对应 main.js createTown / pathfind / updateMovement / 各 dialog。
+## 灰烬庇护所（真实城镇重构版）：
+## - 方形城墙 + 南/北/东三座城门，十字主街 + 中央广场喷泉，街巷两侧布局功能建筑。
+## - 建筑用 Kenney Fantasy Town Kit（CC0）墙件/屋顶/烟囱/招牌拼装，装饰件（喷泉、
+##   风车、货摊、路灯、树、篱笆、货车）全部来自 CC0 资产库。
+## - 碰撞注册制：矩形 AABB（建筑/城墙/货摊）+ 圆形（喷泉/树/路灯/塔），杜绝穿模。
+## - 交互：POI 图标点击即达——附近直接弹界面，远处自动寻路、到达后自动打开。
+## - NPC 交互：对话 / 送礼 / 好感度 / 招募入队（≤3 人同行）。
 
 signal toast_requested(text: String)
 signal dialog_requested(title: String, content: String, actions: Array, eyebrow: String)
-signal dialog_closed
 signal hud_changed
+signal dialog_closed
 signal enter_dungeon_requested
+signal enter_overworld_requested
 signal enter_selection_requested
 
-const GRID_STEP := 0.4
-const GRID_MIN := -13.2
-const GRID_COUNT := 67
-const PLAYER_RADIUS := 0.29
+const TOWN_HALF := 47.0   # 城墙内半宽（正方形城镇）
+const WALL_H := 6.2       # 城墙高（加高后更有要塞感）
+const GATE_HW := 4.2      # 城门半宽（缺口 8.4m）
+const MAIN_HW := 3.6      # 主街半宽
+const ALLEY_HW := 2.6     # 环巷半宽
+const PLAZA_R := 11.0     # 中央广场半径
 
-var player_position := Vector3(0, 0.05, 5.5)
-var player_yaw := PI
-var walk_phase := 0.0
-var moving := false
-var path: Array[Vector3] = []
-var destination_poi: Dictionary = {}
-var near_poi: Dictionary = {}
+# 商店价格表（金币经济：局内掉落 → 主城消费）。
+const SHOP_PRICES := {"potion_hp": 25, "potion_mp": 20, "torch": 8, "net": 30}
+const SELL_PRICES := {"herb": 6, "pelt": 14, "shard": 30}
 
-var obstacles: Array = []          # {x, z, w, d} — w/d 为半宽
-var pois: Array[Dictionary] = []
-var collectible_meshes := {}       # ember_id -> Node3D
-var flames: Array = []             # {node, phase, base, light, shrine}
-var dummy_node: Node3D
+var main = null
+var player: Actor = null
+var followers: Array = []
+var npcs: Array = []               # 主城 NPC（KayKit 冒险者 GLB）
+
+var pois: Array = []               # {id, name, symbol, type, position, approach}
+var near_poi = null                # 每帧计算：玩家附近可交互的 POI
+var pending_interact := ""         # 图标点击后待交互的 POI id（到达自动打开）
+var path: Array = []               # 兼容旧 UI
+var destination_poi = {}           # 兼容旧 UI
 var move_marker: MeshInstance3D
-var town_npcs: Array = []
+var move_target := Vector3.ZERO
+var has_move_target := false
+var player_position := Vector3(0, 0, 40)  # 南门入城出生点
 
-var main = null                    # Main.gd 实例
-var _grid: Array = []              # bool per cell
-var _elapsed := 0.0
-var _dummy_reset_timer := 0.0
+# 碰撞注册表：矩形（轴对齐 AABB）与圆形。
+var _rects: Array = []             # {x, z, hw, hd}
+var _circs: Array = []             # {x, z, r}
+
+var _shop_wares: Array = []        # 武器商在售武器（每次交互刷新）
+var _lamps: Array = []             # 夜间点亮的城市暖光源（火盆/路灯/门灯）
 
 func _ready() -> void:
+	_define_pois()
 	_build_town()
-	_build_grid()
-	_build_move_marker()
-
-func on_enter() -> void:
-	refresh_quest_visibility()
-	hud_changed.emit()
-
-# ---------------- 构建 ----------------
-
-func _obstacle(x: float, z: float, w: float, d: float) -> void:
-	obstacles.append({"x": x, "z": z, "w": w / 2.0, "d": d / 2.0})
-
-func _add_poi(id: String, pname: String, symbol: String, pos: Vector3, dest: Vector2, on_interact: Callable, type := "place") -> Dictionary:
-	var poi := {
-		"id": id, "name": pname, "symbol": symbol,
-		"position": pos, "destination": Vector3(dest.x, 0, dest.y),
-		"on_interact": on_interact, "type": type,
-	}
-	pois.append(poi)
-	return poi
-
-func _window_frame(parent: Node3D, x: float, y: float, z: float, w := 0.46, h := 0.85) -> void:
-	GeoBuilder.box(parent, w + 0.18, h + 0.18, 0.15, Color(0.17,0.20,0.17), Vector3(x, y, z))
-	GeoBuilder.box(parent, w, h, 0.045, GeoBuilder.mat(Color(0.86,0.63,0.31), {"emissive": Color(0.87,0.60,0.22), "emissive_intensity": 0.95}), Vector3(x, y, z + 0.09))
-	GeoBuilder.box(parent, 0.045, h, 0.065, Color(0.26,0.24,0.16), Vector3(x, y, z + 0.12))
-	GeoBuilder.box(parent, w, 0.06, 0.07, Color(0.26,0.24,0.16), Vector3(x, y + 0.08, z + 0.12))
-	GeoBuilder.box(parent, w + 0.26, 0.12, 0.26, Color(0.41,0.38,0.29), Vector3(x, y - h / 2, z + 0.04))
-
-func _building(x: float, z: float, w: float, d: float, h: float, roof_color := Color(0.19,0.23,0.21)) -> Node3D:
-	var b := Node3D.new()
-	b.position = Vector3(x, 0, z)
-	add_child(b)
-	GeoBuilder.box(b, w + 0.25, 0.35, d + 0.25, Color(0.25,0.29,0.23), Vector3(0, 0.1, 0))
-	GeoBuilder.box(b, w, h, d, Color(0.32,0.33,0.27), Vector3(0, h / 2 + 0.25, 0))
-	for i in range(int(h / 0.55)):
-		GeoBuilder.box(b, w + 0.03, 0.035, d + 0.03, Color(0.22,0.26,0.22), Vector3(0, 0.4 + i * 0.55, 0))
-		for j in range(int(w / 0.7)):
-			GeoBuilder.box(b, 0.035, 0.5, 0.035, Color(0.22,0.26,0.22), Vector3(-w / 2 + 0.3 + j * 0.7 + (i % 2) * 0.18, 0.65 + i * 0.55, d / 2 + 0.01))
-	for side in [-1, 1]:
-		GeoBuilder.box(b, 0.22, h + 0.1, d + 0.12, Color(0.19,0.24,0.19), Vector3(side * (w / 2 - 0.12), h / 2 + 0.25, 0))
-	GeoBuilder.box(b, w + 0.36, 0.18, d + 0.35, Color(0.45,0.44,0.35), Vector3(0, h + 0.23, 0))
-	# 屋顶：用斜梁近似三.js 的 ExtrudeGeometry 山墙。
-	var roof_h := w * 0.52
-	for side in [-1, 1]:
-		var p0 := Vector3(side * (w / 2 + 0.3), h + 0.31, -d / 2 - 0.24)
-		var p1 := Vector3(0, h + 0.31 + roof_h, -d / 2 - 0.24)
-		var p2 := Vector3(side * (w / 2 + 0.3), h + 0.31, d / 2 + 0.24)
-		var p3 := Vector3(0, h + 0.31 + roof_h, d / 2 + 0.24)
-		GeoBuilder.beam(b, p0, p1, 0.1, 0.1, roof_color)
-		GeoBuilder.beam(b, p2, p3, 0.1, 0.1, roof_color)
-		GeoBuilder.beam(b, p1, p3, 0.1, 0.1, roof_color)
-		# 斜面板
-		var panel := GeoBuilder.box(b, (p0 - p1).length(), 0.06, d + 0.48, roof_color)
-		panel.position = (p0 + p1 + p2 + p3) / 4.0
-		panel.rotation.z = side * atan2(roof_h, w / 2 + 0.3)
-	for i in range(6):
-		var yy := i * roof_h / 6.0
-		GeoBuilder.box(b, (w + 0.6) * (1.0 - i / 6.0), 0.04, d + 0.51, Color(0.29,0.32,0.27), Vector3(0, h + 0.32 + yy, 0))
-	GeoBuilder.box(b, 0.12, 0.15, d + 0.68, Color(0.47,0.44,0.35), Vector3(0, h + 0.31 + roof_h, 0))
-	_obstacle(x, z, w + 0.3, d + 0.3)
-	return b
-
-func _crate(x: float, z: float, size := 0.65) -> void:
-	GeoBuilder.box(self, size, size, size, Color(0.32,0.27,0.20), Vector3(x, size / 2, z))
-	for s in [-1, 1]:
-		GeoBuilder.box(self, 0.06, size, size + 0.03, Color(0.45,0.38,0.27), Vector3(x + s * size * 0.36, size / 2, z))
-		GeoBuilder.box(self, size + 0.025, 0.06, size + 0.025, Color(0.45,0.38,0.27), Vector3(x, size * (0.5 + s * 0.37), z))
-
-func _dead_tree(x: float, z: float, s := 1.0) -> void:
-	var t := Node3D.new()
-	t.position = Vector3(x, 0, z)
-	t.scale = Vector3.ONE * s
-	add_child(t)
-	GeoBuilder.beam(t, Vector3(0, 0, 0), Vector3(-0.12, 2.7, 0), 0.18, 0.18, Color(0.20,0.24,0.18))
-	GeoBuilder.beam(t, Vector3(-0.06, 1.3, 0), Vector3(-0.85, 2.3, 0.2), 0.11, 0.1, Color(0.26,0.29,0.22))
-	GeoBuilder.beam(t, Vector3(-0.85, 2.3, 0.2), Vector3(-1.0, 3, 0.16), 0.055, 0.055, Color(0.26,0.29,0.22))
-	GeoBuilder.beam(t, Vector3(-0.09, 1.9, 0), Vector3(0.62, 2.6, -0.25), 0.1, 0.1, Color(0.26,0.29,0.22))
-	GeoBuilder.beam(t, Vector3(0.62, 2.6, -0.25), Vector3(1, 2.72, -0.3), 0.05, 0.05, Color(0.26,0.29,0.22))
-	_obstacle(x, z, 0.45, 0.45)
-
-func _flame(parent: Node3D, pos: Vector3, radius: float, base := 1.5, shrine := false) -> MeshInstance3D:
-	var f := GeoBuilder.octahedron(parent, radius, GeoBuilder.mat(Color(0.82,0.58,0.24), {"emissive": Color(0.91,0.55,0.15), "emissive_intensity": 1.5, "unshaded": true}), pos, false)
-	flames.append({"node": f, "phase": randf() * 9.0, "base": base, "light": null, "shrine": shrine})
-	return f
-
-func _build_town() -> void:
-	Ambience.tiled_floor(self, 30, -0.13)
-	for i in range(-13, 14):
-		for x in [-3.8, 3.8]:
-			GeoBuilder.box(self, 0.16, 0.09, 0.9, Color(0.47,0.44,0.35), Vector3(x, -0.01, i))
-	for x in [-14.1, 14.1]:
-		GeoBuilder.box(self, 0.55, 1.0, 29, Color(0.26,0.31,0.24), Vector3(x, 0.3, 0))
-		var z := -13.2
-		while z <= 13.2:
-			GeoBuilder.box(self, 0.72, 1.3, 0.6, Color(0.34,0.38,0.30), Vector3(x, 0.48, z))
-			z += 1.6
-	GeoBuilder.box(self, 29, 1.8, 0.6, Color(0.22,0.27,0.22), Vector3(0, 0.75, -13.7))
-
-	# 铁匠铺
-	var forge := _building(-9.2, -8, 4.6, 3.9, 2.7, Color(0.23,0.21,0.19))
-	_window_frame(forge, -1.25, 1.65, 2.0, 0.72, 0.75)
-	var hearth := Ambience.gothic_arch(forge, 1.35, 1.8, 0.3, Color(0.45,0.39,0.30))
-	hearth.position = Vector3(0.7, 0.15, 2.03)
-	GeoBuilder.box(forge, 1.24, 1.5, 0.05, Color(0.09,0.11,0.09), Vector3(0.7, 0.9, 2.01))
-	for i in range(7):
-		_flame(forge, Vector3(0.3 + i * 0.13, 0.4 + randf() * 0.2, 2.14), 0.2, 1.5)
-	var forge_light := OmniLight3D.new()
-	forge_light.position = Vector3(-8.1, 1.9, -5.4)
-	forge_light.light_color = Color(1.0, 0.6, 0.26)
-	forge_light.light_energy = 3.0
-	forge_light.omni_range = 9.0
-	add_child(forge_light)
-	GeoBuilder.box(forge, 0.75, 2.3, 0.85, Color(0.23,0.25,0.21), Vector3(-1.15, 4.4, -0.55))
-	GeoBuilder.box(forge, 0.9, 0.2, 1, Color(0.42,0.38,0.30), Vector3(-1.15, 5.58, -0.55))
-	var anvil := Node3D.new()
-	anvil.position = Vector3(-7.1, 0, -3.7)
-	add_child(anvil)
-	GeoBuilder.box(anvil, 0.65, 0.6, 0.55, Color(0.27,0.23,0.16), Vector3(0, 0.3, 0))
-	GeoBuilder.box(anvil, 0.82, 0.22, 0.43, Color(0.46,0.48,0.41), Vector3(0, 0.73, 0))
-	GeoBuilder.box(anvil, 0.41, 0.32, 0.36, Color(0.38,0.41,0.35), Vector3(0, 0.6, 0))
-	GeoBuilder.beam(anvil, Vector3(0.32, 0.75, 0), Vector3(0.66, 0.8, 0), 0.17, 0.22, Color(0.45,0.47,0.42))
-	_obstacle(-7.1, -3.7, 1, 0.9)
-	var smith := ProceduralCharacter.new("warrior", 313)
-	smith.position = Vector3(-8.9, 0.06, -3)
-	smith.scale = Vector3.ONE * 0.67
-	smith.rotation.y = 0.4
-	add_child(smith)
-	town_npcs.append(smith)
-
-	# 旅店
-	var inn := _building(8.6, -8.2, 4.5, 4.2, 3.45, Color(0.20,0.24,0.22))
-	for x in [-1.3, 1.3]:
-		_window_frame(inn, x, 2.65, 2.13)
-		_window_frame(inn, x, 1.15, 2.13, 0.54, 0.75)
-	GeoBuilder.box(inn, 0.86, 1.6, 0.08, Color(0.13,0.18,0.14), Vector3(0, 0.96, 2.16))
-	GeoBuilder.box(inn, 1.0, 0.11, 0.4, Color(0.46,0.44,0.35), Vector3(0, 0.22, 2.28))
-	GeoBuilder.beam(inn, Vector3(0.55, 2.5, 2.2), Vector3(0.55, 2.5, 3.05), 0.06, 0.06, Color(0.31,0.30,0.21))
-	GeoBuilder.box(inn, 0.76, 0.49, 0.08, Color(0.44,0.38,0.27), Vector3(0.55, 2.16, 3.05))
-	GeoBuilder.box(inn, 0.42, 0.045, 0.1, Color(0.76,0.67,0.42), Vector3(0.55, 2.16, 3.1))
-
-	# 教堂 + 深渊之门
-	var chapel := _building(0, -12, 4.5, 2.4, 4.1, Color(0.20,0.24,0.22))
-	var gate := Ambience.gothic_arch(chapel, 2.1, 3.65, 0.4, Color(0.47,0.45,0.36))
-	gate.position.z = 1.38
-	GeoBuilder.box(chapel, 1.98, 3.2, 0.07, Color(0.07,0.16,0.12), Vector3(0, 1.6, 1.41))
-	var gx := -0.8
-	while gx <= 0.8:
-		GeoBuilder.box(chapel, 0.055, 2.95, 0.09, Color(0.41,0.41,0.29), Vector3(gx, 1.5, 1.49))
-		gx += 0.32
-	for side in [-1, 1]:
-		var spire := Node3D.new()
-		spire.position = Vector3(side * 3.4, 0, -11.9)
-		add_child(spire)
-		GeoBuilder.box(spire, 0.9, 5.1, 1, Color(0.33,0.35,0.29), Vector3(0, 2.5, 0))
-		GeoBuilder.cylinder(spire, 0, 0.73, 2.35, Color(0.20,0.25,0.22), Vector3(0, 6.05, 0), 4)
-		GeoBuilder.box(spire, 0.055, 0.8, 0.055, Color(0.58,0.51,0.35), Vector3(0, 7.5, 0))
-		GeoBuilder.box(spire, 0.38, 0.055, 0.055, Color(0.58,0.51,0.35), Vector3(0, 7.64, 0))
-
-	# 中央祭坛
-	var stone_colors: Array[Color] = Ambience._stone_colors
-	for i in range(3):
-		GeoBuilder.cylinder(self, 1.35 - i * 0.18, 1.35 - i * 0.18, 0.19, stone_colors[i + 1], Vector3(0, 0.04 + i * 0.19, 0), 10)
-	GeoBuilder.cylinder(self, 0.72, 0.45, 0.65, Color(0.31,0.34,0.27), Vector3(0, 0.77, 0), 8)
-	GeoBuilder.cylinder(self, 0.84, 0.72, 0.15, Color(0.56,0.52,0.40), Vector3(0, 1.13, 0), 8)
-	GeoBuilder.cylinder(self, 0.7, 0.65, 0.06, Color(0.16,0.18,0.13), Vector3(0, 1.2, 0), 8)
-	for i in range(9):
-		var a := i / 9.0 * TAU
-		_flame(self, Vector3(cos(a) * 0.35, 1.4 + randf() * 0.18, sin(a) * 0.35), 0.21, 2.0, true)
-	_obstacle(0, 0, 2.6, 2.6)
-	var shrine_light := OmniLight3D.new()
-	shrine_light.position = Vector3(0, 2, 0)
-	shrine_light.light_color = Color(0.94, 0.75, 0.47)
-	shrine_light.light_energy = 2.6
-	shrine_light.omni_range = 8.0
-	add_child(shrine_light)
-	flames.append({"node": null, "phase": 0.0, "base": 0.0, "light": shrine_light, "shrine": true})
-
-	# 药剂商摊位
-	var stall := Node3D.new()
-	stall.position = Vector3(9.6, 0, 2)
-	add_child(stall)
-	for x in [-1.2, 1.2]:
-		for z in [-0.7, 0.7]:
-			GeoBuilder.box(stall, 0.08, 2.3, 0.08, Color(0.33,0.30,0.21), Vector3(x, 1.15, z))
-	GeoBuilder.box(stall, 2.4, 0.92, 1.25, Color(0.29,0.27,0.20), Vector3(0, 0.46, 0))
-	GeoBuilder.box(stall, 2.65, 0.12, 1.4, Color(0.48,0.41,0.31), Vector3(0, 0.98, 0))
-	for i in range(7):
-		var cloth := GeoBuilder.box(stall, 0.39, 0.065, 1.9, Color(0.38,0.40,0.29) if i % 2 else Color(0.20,0.25,0.20), Vector3(-1.17 + i * 0.39, 2.3, 0))
-		cloth.rotation.x = 0.14
-		GeoBuilder.box(stall, 0.39, 0.28, 0.05, Color(0.38,0.40,0.29) if i % 2 else Color(0.20,0.25,0.20), Vector3(-1.17 + i * 0.39, 2.02, 0.95))
-	for i in range(10):
-		var bx := (randf() - 0.5) * 2
-		var bz := (randf() - 0.5) * 0.7
-		GeoBuilder.cylinder(stall, 0.045, 0.09, 0.22, Color(0.45,0.52,0.36) if i % 3 else Color(0.56,0.40,0.32), Vector3(bx, 1.16, bz), 5)
-		GeoBuilder.cylinder(stall, 0.035, 0.035, 0.07, Color(0.70,0.63,0.47), Vector3(bx, 1.3, bz), 5)
-	_obstacle(9.6, 2, 2.8, 2.1)
-	var merchant := ProceduralCharacter.new("archer", 514)
-	merchant.position = Vector3(7.8, 0, 1.9)
-	merchant.scale = Vector3.ONE * 0.63
-	merchant.rotation.y = -0.9
-	add_child(merchant)
-	town_npcs.append(merchant)
-
-	# 告示板
-	var board := Node3D.new()
-	board.position = Vector3(6.6, 0, -3.8)
-	add_child(board)
-	for x in [-0.58, 0.58]:
-		GeoBuilder.box(board, 0.12, 2.0, 0.13, Color(0.32,0.29,0.21), Vector3(x, 1, 0))
-	GeoBuilder.box(board, 1.45, 0.91, 0.16, Color(0.25,0.24,0.17), Vector3(0, 1.5, 0))
-	GeoBuilder.box(board, 1.66, 0.12, 0.29, Color(0.50,0.44,0.31), Vector3(0, 2.02, 0))
-	for i in range(3):
-		var note := GeoBuilder.box(board, 0.3, 0.48 - i * 0.04, 0.02, Color(0.62,0.58,0.43) if i % 2 else Color(0.69,0.63,0.48), Vector3(-0.43 + i * 0.42, 1.52, 0.098))
-		note.rotation.z = (i - 1) * 0.1
-	_obstacle(6.6, -3.8, 1.65, 0.7)
-
-	# 训练木桩
-	var dummy := Node3D.new()
-	dummy.position = Vector3(-7.3, 0, 6.2)
-	add_child(dummy)
-	GeoBuilder.cylinder(dummy, 0.07, 0.08, 1.9, Color(0.41,0.38,0.26), Vector3(0, 0.95, 0))
-	GeoBuilder.cylinder(dummy, 0.25, 0.27, 0.69, Color(0.60,0.53,0.38), Vector3(0, 1.26, 0), 6)
-	GeoBuilder.box(dummy, 1.05, 0.1, 0.12, Color(0.47,0.42,0.31), Vector3(0, 1.5, 0))
-	GeoBuilder.cylinder(dummy, 0.2, 0.2, 0.32, Color(0.69,0.63,0.47), Vector3(0, 1.78, 0), 6)
-	GeoBuilder.box(dummy, 0.13, 0.13, 0.02, Color(0.35,0.30,0.20), Vector3(0, 1.37, 0.25))
-	_obstacle(-7.3, 6.2, 0.8, 0.8)
-	dummy_node = dummy
-
-	for pos in [[-4.8, -8], [4.7, -8], [-9.5, 4.5], [5, 6.4]]:
-		Ambience.candelabra(self, pos[0], pos[1], 1.6, false)
-	for pos in [[-11.2, -3.7], [-10.3, -3.4], [11.7, -3.5], [11.6, 6.2], [-10.6, 9]]:
-		_crate(pos[0], pos[1])
-	for pos in [[-12.2, 5.2, 1.1], [12.2, 8.8, 1.3], [-10.8, 11.4, 0.9], [11.8, -12.1, 1.2]]:
-		_dead_tree(pos[0], pos[1], pos[2])
-	for side in [-1, 1]:
-		GeoBuilder.box(self, 8.6, 0.13, 0.2, Color(0.38,0.39,0.29), Vector3(side * 8.2, 0.8, 12.8))
-		var fx := 4.0
-		while fx < 12.5:
-			GeoBuilder.box(self, 0.06, 1.4, 0.06, Color(0.22,0.28,0.20), Vector3(side * fx, 0.65, 12.8))
-			fx += 0.6
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 742
-	for i in range(72):
-		var rx := (rng.randf() - 0.5) * 27
-		var rz := (rng.randf() - 0.5) * 26
-		if abs(rx) < 3.8: continue
-		var rock := GeoBuilder.box(self, 0.09 + rng.randf() * 0.22, 0.06, 0.1 + rng.randf() * 0.18, Color(0.40,0.42,0.31) if i % 3 else Color(0.20,0.31,0.20), Vector3(rx, 0.02, rz))
-		rock.rotation.y = rng.randf() * TAU
-	for i in range(3):
-		Ambience.make_fog(self, 38, 0.1 + 0.28 * i, 0.075)
-	Ambience.make_motes(self, 125, 31, Color(0.76,0.72,0.53))
-
-	_add_poi("smith", "铁匠铺", "⚒", Vector3(-8.3, 2.7, -3.2), Vector2(-7.8, -2.2), _smith_dialog)
-	_add_poi("board", "告示板", "!", Vector3(6.6, 2.7, -3.8), Vector2(6.5, -2.6), _board_dialog)
-	_add_poi("shrine", "余火祭坛", "✦", Vector3(0, 2.6, 0), Vector2(0, 2), _shrine_dialog)
-	_add_poi("merchant", "药剂商", "+", Vector3(8.9, 2.6, 2), Vector2(7.6, 2.6), _merchant_dialog)
-	_add_poi("dummy", "训练木桩", "†", Vector3(-7.3, 2.6, 6.2), Vector2(-6.1, 6.3), _dummy_dialog)
-	_add_poi("gate", "深渊之门", "◇", Vector3(0, 4.3, -10.5), Vector2(0, -9.7), _gate_dialog)
-	var locations := [[-4.5, 4.7], [4.5, 7.9], [3.1, -6.5]]
-	for i in range(3):
-		var x: float = locations[i][0]
-		var z: float = locations[i][1]
-		var crystal := Node3D.new()
-		crystal.position = Vector3(x, 0.55, z)
-		add_child(crystal)
-		var center := GeoBuilder.octahedron(crystal, 0.19, GeoBuilder.mat(Color(0.90,0.69,0.38), {"emissive": Color(0.85,0.53,0.18), "emissive_intensity": 1.2}), Vector3.ZERO, false)
-		center.scale.y = 1.8
-		var ring := GeoBuilder.ring(crystal, 0.30, 0.335, Color(0.75,0.57,0.28), Vector3(0, -0.43, 0), 16)
-		collectible_meshes["ember%d" % i] = crystal
-		_add_poi("ember%d" % i, "拾取余火", "·", Vector3(x, 1.35, z), Vector2(x, z), _collect_ember.bind("ember%d" % i), "ember")
-
-func _build_move_marker() -> void:
-	move_marker = GeoBuilder.ring(self, 0.16, 0.26, GeoBuilder.mat(Color(0.85,0.74,0.53), {"emissive": Color(0.85,0.74,0.53), "emissive_intensity": 0.8, "transparent": true, "opacity": 0.8, "depth_write": false, "double_sided": true}), Vector3(0, 0.02, 0), 32)
+	_build_player()
+	_spawn_npcs()
+	move_marker = GeoBuilder.ring(self, 0.28, 0.4, Color(0.9, 0.85, 0.6, 0.8), Vector3.ZERO, 24)
 	move_marker.visible = false
 
-# ---------------- A* ----------------
+# ---------------- POI ----------------
+func _define_pois() -> void:
+	# position=交互点（门前/入口），approach=寻路停靠点（必在可通行区，且与 position 距离 < 3.6m）。
+	pois = [
+		{"id": "smithy", "name": "武器商家", "symbol": "⚒", "type": "place",
+			"position": Vector3(-7.4, 0, 12), "approach": Vector3(-5.0, 0, 12)},
+		{"id": "apothecary", "name": "道具商家", "symbol": "⚗", "type": "place",
+			"position": Vector3(8.0, 0, 12), "approach": Vector3(5.0, 0, 12)},
+		{"id": "guild", "name": "冒险者协会", "symbol": "⚜", "type": "place",
+			"position": Vector3(-10.0, 0, -8), "approach": Vector3(-7.0, 0, -8)},
+		{"id": "library", "name": "图书馆", "symbol": "✦", "type": "place",
+			"position": Vector3(12.8, 0, -6), "approach": Vector3(10.0, 0, -6)},
+		{"id": "training", "name": "修炼场", "symbol": "⚔", "type": "place",
+			"position": Vector3(-28.0, 0, 31), "approach": Vector3(-25.5, 0, 31)},
+		{"id": "abyss_gate", "name": "深渊之门", "symbol": "☉", "type": "place",
+			"position": Vector3(0, 0, -43), "approach": Vector3(0, 0, -40.5)},
+		{"id": "east_gate", "name": "东郊哨站", "symbol": "➤", "type": "place",
+			"position": Vector3(42.5, 0, 0), "approach": Vector3(40.5, 0, 0)},
+		{"id": "board", "name": "告示板", "symbol": "❗", "type": "place",
+			"position": Vector3(-6.5, 0, 7.0), "approach": Vector3(-4.6, 0, 6.2)},
+	]
 
-func _walkable(x: float, z: float) -> bool:
-	if x < -13 or x > 13 or z < -13 or z > 12.5: return false
-	for o in obstacles:
-		if abs(x - o.x) < o.w + PLAYER_RADIUS and abs(z - o.z) < o.d + PLAYER_RADIUS:
-			return false
+func poi_pos(id: String) -> Vector3:
+	for p in pois:
+		if p.id == id: return p.position
+	return Vector3.ZERO
+
+## 小地图数据：城墙/建筑（矩形）+ 圆形障碍 + 兴趣点。
+func minimap_data() -> Dictionary:
+	var marks: Array = []
+	for p in pois:
+		marks.append({"pos": p.position, "kind": "poi", "id": p.id, "short": _poi_short(p.id)})
+	return {"half": TOWN_HALF, "rects": _rects, "circs": _circs, "marks": marks}
+
+## 兴趣点在小地图上的单字标记（中文字形必然有，避免缺字）。
+func _poi_short(id: String) -> String:
+	match id:
+		"smithy": return "锤"
+		"apothecary": return "药"
+		"guild": return "会"
+		"library": return "书"
+		"training": return "练"
+		"abyss_gate": return "渊"
+		"east_gate": return "门"
+		"board": return "板"
+	return "·"
+
+func _poi_by_id(id: String) -> Dictionary:
+	for p in pois:
+		if p.id == id: return p
+	return {}
+
+# ---------------- 碰撞注册 ----------------
+func add_rect_obstacle(cx: float, cz: float, hw: float, hd: float) -> void:
+	_rects.append({"x": cx, "z": cz, "hw": hw, "hd": hd})
+
+func add_circ_obstacle(x: float, z: float, r: float) -> void:
+	_circs.append({"x": x, "z": z, "r": r})
+
+func _walkable(pos: Vector3) -> bool:
+	# 城内正方形边界（城墙内 1.1m 缓冲）。
+	if absf(pos.x) > TOWN_HALF - 1.1 or absf(pos.z) > TOWN_HALF - 1.1: return false
+	for r in _rects:
+		if absf(pos.x - r.x) < r.hw and absf(pos.z - r.z) < r.hd: return false
+	for c in _circs:
+		if Vector2(pos.x - c.x, pos.z - c.z).length() < c.r: return false
 	return true
 
-func _grid_point(v: float) -> int:
-	return clampi(int(round((v - GRID_MIN) / GRID_STEP)), 0, GRID_COUNT - 1)
+# ---------------- 场景搭建 ----------------
+func _build_town() -> void:
+	var Env := Ambience
+	Env.tiled_floor(self, int(TOWN_HALF * 2.4), 0.0, 233)
+	_build_streets()
+	_build_walls()
+	_build_buildings()
+	_build_plaza()
+	_build_decor()
+	_build_training_ground()
 
-func _world_point(n: int) -> float:
-	return n * GRID_STEP + GRID_MIN
+## 街道：十字主街 + 南/北环巷 + 中央广场石铺（叠在草地之上）。
+func _build_streets() -> void:
+	var street := Color(0.31, 0.30, 0.28)
+	var alley := Color(0.27, 0.27, 0.25)
+	# 南北主街 / 东西主街。
+	_street(Vector3(0, 0, -46), Vector3(0, 0, 46), MAIN_HW * 2.0, street)
+	_street(Vector3(-46, 0, 0), Vector3(46, 0, 0), MAIN_HW * 2.0, street)
+	# 南北环巷（连接各街区，形成真实城镇的路网）。
+	_street(Vector3(-40, 0, 23.5), Vector3(40, 0, 23.5), ALLEY_HW * 2.0, alley)
+	_street(Vector3(-40, 0, -23.5), Vector3(40, 0, -23.5), ALLEY_HW * 2.0, alley)
+	# 中央广场石铺 + 外圈石缘。
+	GeoBuilder.cylinder(self, PLAZA_R, PLAZA_R + 0.5, 0.06, Color(0.34, 0.32, 0.29), Vector3(0, 0.04, 0), 36)
+	GeoBuilder.ring(self, PLAZA_R - 0.32, PLAZA_R + 0.32, Color(0.23, 0.22, 0.20), Vector3(0, 0.078, 0), 40)
+	# 主街街缘石。
+	for s in [-1.0, 1.0]:
+		var cx := GeoBuilder.box(self, 0.26, 0.09, TOWN_HALF * 2.0, Color(0.23, 0.22, 0.21), Vector3(s * (MAIN_HW + 0.16), 0.05, 0))
+		var cz := GeoBuilder.box(self, TOWN_HALF * 2.0, 0.09, 0.26, Color(0.23, 0.22, 0.21), Vector3(0, 0.05, s * (MAIN_HW + 0.16)))
+		cx.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		cz.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-func _build_grid() -> void:
-	_grid.resize(GRID_COUNT * GRID_COUNT)
-	for i in range(GRID_COUNT * GRID_COUNT):
-		_grid[i] = _walkable(_world_point(i % GRID_COUNT), _world_point(i / GRID_COUNT))
+## 铺一条矩形石板街（a→b，宽 w）。
+func _street(a: Vector3, b: Vector3, w: float, col: Color) -> void:
+	var d := b - a
+	var length := d.length()
+	if length < 0.01: return
+	var strip := GeoBuilder.box(self, w, 0.05, length, col,
+		Vector3((a.x + b.x) * 0.5, 0.035, (a.z + b.z) * 0.5))
+	strip.rotation.y = atan2(d.x, d.z)
+	strip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-func _nearest_cell(x: int, z: int) -> Vector2i:
-	var idx := func(x: int, z: int) -> int: return z * GRID_COUNT + x
-	if _grid[idx.call(x, z)]: return Vector2i(x, z)
-	for radius in range(1, 6):
-		var best := Vector2i(-1, -1)
-		var best_d := INF
-		for dx in range(-radius, radius + 1):
-			for dz in range(-radius, radius + 1):
-				var xx := x + dx
-				var zz := z + dz
-				var d := dx * dx + dz * dz
-				if xx >= 0 and xx < GRID_COUNT and zz >= 0 and zz < GRID_COUNT and _grid[idx.call(xx, zz)] and d < best_d:
-					best = Vector2i(xx, zz); best_d = d
-		if best.x >= 0: return best
-	return Vector2i(-1, -1)
+## 城墙：分段石砌 + 墙顶走沿 + 四角塔楼 + 门楼。同步注册碰撞。
+func _build_walls() -> void:
+	var stone := Color(0.40, 0.39, 0.36)
+	var seg_len := TOWN_HALF - GATE_HW  # 单侧门旁墙段长
+	# 南/北墙（z=±47，中间留门洞）。
+	for zs in [-1.0, 1.0]:
+		for xs in [-1.0, 1.0]:
+			var cx: float = xs * (GATE_HW + seg_len * 0.5)
+			_segmented_wall(Vector3(cx, 0, zs * TOWN_HALF), Vector3(seg_len, WALL_H, 1.7), true, stone)
+			add_rect_obstacle(cx, zs * TOWN_HALF, seg_len * 0.5, 1.2)
+	# 东墙（x=47，中间留门洞）。
+	for zs in [-1.0, 1.0]:
+		var cz: float = zs * (GATE_HW + seg_len * 0.5)
+		_segmented_wall(Vector3(TOWN_HALF, 0, cz), Vector3(1.7, WALL_H, seg_len), false, stone)
+		add_rect_obstacle(TOWN_HALF, cz, 1.2, seg_len * 0.5)
+	# 西墙整段。
+	_segmented_wall(Vector3(-TOWN_HALF, 0, 0), Vector3(1.7, WALL_H, TOWN_HALF * 2.0), false, stone)
+	add_rect_obstacle(-TOWN_HALF, 0, 1.2, TOWN_HALF)
+	# 四角塔楼 + 门侧塔楼（石柱资产加高）。
+	for c in [Vector3(-TOWN_HALF, 0, -TOWN_HALF), Vector3(TOWN_HALF, 0, -TOWN_HALF),
+			Vector3(-TOWN_HALF, 0, TOWN_HALF), Vector3(TOWN_HALF, 0, TOWN_HALF)]:
+		AssetLib.spawn_norm(self, "town/pillar-stone.glb", 7.6, Vector3(c.x, 0, c.z), 0, "y")
+		add_circ_obstacle(c.x, c.z, 1.2)
+	for g in [Vector3(-GATE_HW, 0, TOWN_HALF), Vector3(GATE_HW, 0, TOWN_HALF),
+			Vector3(-GATE_HW, 0, -TOWN_HALF), Vector3(GATE_HW, 0, -TOWN_HALF),
+			Vector3(TOWN_HALF, 0, -GATE_HW), Vector3(TOWN_HALF, 0, GATE_HW)]:
+		AssetLib.spawn_norm(self, "town/pillar-stone.glb", 6.4, Vector3(g.x, 0, g.z), 0, "y")
+		add_circ_obstacle(g.x, g.z, 1.05)
+	# 南门/东门门楼木梁（装饰，无门板，可通行）。
+	GeoBuilder.box(self, GATE_HW * 2.0 + 2.4, 0.55, 1.1, Color(0.30, 0.24, 0.16), Vector3(0, WALL_H - 0.7, TOWN_HALF))
+	GeoBuilder.box(self, 1.1, WALL_H - 0.6, GATE_HW * 2.0 + 2.4, Color(0.30, 0.24, 0.16), Vector3(TOWN_HALF, WALL_H - 0.7, 0))
+	# 门楼火盆（夜间门洞照明）。
+	for p in [Vector3(-GATE_HW - 0.6, 0, TOWN_HALF - 1.4), Vector3(GATE_HW + 0.6, 0, TOWN_HALF - 1.4),
+			Vector3(TOWN_HALF - 1.4, 0, -GATE_HW - 0.6), Vector3(TOWN_HALF - 1.4, 0, GATE_HW + 0.6)]:
+		_build_brazier(p)
 
-func pathfind(start: Vector3, end: Vector3) -> Array[Vector3]:
-	var result: Array[Vector3] = []
-	var s := _nearest_cell(_grid_point(start.x), _grid_point(start.z))
-	var e := _nearest_cell(_grid_point(end.x), _grid_point(end.z))
-	if s.x < 0 or e.x < 0: return result
-	var idx := func(x: int, z: int) -> int: return z * GRID_COUNT + x
-	var start_id: int = idx.call(s.x, s.y)
-	var end_id: int = idx.call(e.x, e.y)
-	var open: Array[int] = [start_id]
-	var closed := {}
-	var previous := {}
-	var cost := {start_id: 0.0}
-	var heuristic := func(id: int) -> float:
-		return Vector2(id % GRID_COUNT - e.x, id / GRID_COUNT - e.y).length()
-	var iterations := 0
-	while open.size() and iterations < GRID_COUNT * GRID_COUNT:
-		iterations += 1
-		var best := 0
-		for i in range(1, open.size()):
-			if cost.get(open[i], INF) + heuristic.call(open[i]) < cost.get(open[best], INF) + heuristic.call(open[best]):
-				best = i
-		var current: int = open[best]
-		open.remove_at(best)
-		if current == end_id:
-			var c := current
-			while c != start_id:
-				result.append(Vector3(_world_point(c % GRID_COUNT), 0.05, _world_point(c / GRID_COUNT)))
-				c = previous[c]
-			result.reverse()
-			if result.is_empty():
-				result.append(Vector3(_world_point(e.x), 0.05, _world_point(e.y)))
-			return result
-		closed[current] = true
-		var cx := current % GRID_COUNT
-		var cz := current / GRID_COUNT
-		for dx in range(-1, 2):
-			for dz in range(-1, 2):
-				if dx == 0 and dz == 0: continue
-				var nx := cx + dx
-				var nz := cz + dz
-				if nx < 0 or nx >= GRID_COUNT or nz < 0 or nz >= GRID_COUNT: continue
-				var next: int = idx.call(nx, nz)
-				if not _grid[next] or closed.has(next): continue
-				if dx != 0 and dz != 0 and (not _grid[idx.call(cx + dx, cz)] or not _grid[idx.call(cx, cz + dz)]): continue
-				var new_cost: float = cost[current] + (1.4142136 if dx != 0 and dz != 0 else 1.0)
-				if new_cost < cost.get(next, INF):
-					previous[next] = current
-					cost[next] = new_cost
-					if not open.has(next): open.append(next)
-	return result
+## 分段石墙：长轴切 3 段做颜色抖动，顶部压走沿，避免大平板感。
+func _segmented_wall(center: Vector3, size: Vector3, along_x: bool, col: Color) -> void:
+	var long_len := size.x if along_x else size.z
+	var step := long_len / 3.0
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(center.x * 7.0 + center.z * 13.0)
+	for i in range(3):
+		var off := -long_len * 0.5 + step * (i + 0.5)
+		var c := col * (0.9 + rng.randf() * 0.2)
+		var pos := center + (Vector3(off, 0, 0) if along_x else Vector3(0, 0, off))
+		var w := (step - 0.06) if along_x else size.x
+		var d := size.z if along_x else (step - 0.06)
+		GeoBuilder.box(self, w, size.y, d, c, pos + Vector3(0, size.y * 0.5, 0))
+	# 墙顶走沿（略外扩，压出俯视轮廓）。
+	GeoBuilder.box(self, size.x + 0.35, 0.5, size.z + 0.35, col.darkened(0.14), center + Vector3(0, size.y + 0.25, 0))
 
-func set_path(target: Vector3, poi: Dictionary = {}) -> bool:
-	var found := pathfind(player_position, target)
-	if found.is_empty():
-		toast_requested.emit("那条路已被旧日的残垣封住。")
-		return false
-	path = found
+## 石砌火盆：铁篮 + 火焰 + 暖光（门楼/广场照明）。
+func _build_brazier(pos: Vector3) -> void:
+	GeoBuilder.cylinder(self, 0.34, 0.5, 0.7, Color(0.20, 0.19, 0.18), pos + Vector3(0, 0.35, 0), 8)
+	GeoBuilder.cylinder(self, 0.56, 0.42, 0.22, Color(0.16, 0.15, 0.14), pos + Vector3(0, 0.76, 0), 8)
+	var flame := GeoBuilder.octahedron(self, 0.34, GeoBuilder.mat(Color(1.0, 0.62, 0.22), {"emissive": Color(1.0, 0.55, 0.15), "emissive_intensity": 2.6}), pos + Vector3(0, 1.05, 0), false)
+	flame.scale = Vector3(0.85, 1.5, 0.85)
+	var l := OmniLight3D.new()
+	l.light_color = Color(1.0, 0.62, 0.28)
+	l.light_energy = 3.4
+	l.omni_range = 9.0
+	l.position = pos + Vector3(0, 1.3, 0)
+	add_child(l)
+	_lamps.append(l)
+	add_circ_obstacle(pos.x, pos.z, 0.55)
+
+## 功能建筑 + 民居（全部注册碰撞）。门朝向街道，形成沿街立面。
+func _build_buildings() -> void:
+	# 铁匠铺 / 药庐：南主街两侧对望。
+	_nordic_house(Vector3(-13, 0, 12), 9, 8, "E", "smithy")
+	add_rect_obstacle(-13, 12, 4.2, 3.7)
+	_nordic_house(Vector3(13, 0, 12), 8, 8, "W", "apothecary")
+	add_rect_obstacle(13, 12, 3.7, 3.7)
+	# 冒险者协会：广场西侧大长屋（面向广场）。
+	_nordic_house(Vector3(-17, 0, -8), 12, 10, "E", "guild")
+	add_rect_obstacle(-17, -8, 5.6, 4.6)
+	# 图书馆（石塔）。
+	_build_library_tower(Vector3(18, 0, -6))
+	add_circ_obstacle(18, -6, 4.5)
+	# 民居 ×6（无交互，纯景观，分布在各街区）。
+	_nordic_house(Vector3(-24, 0, 10), 7, 7, "E", "")
+	add_rect_obstacle(-24, 10, 3.2, 3.2)
+	_nordic_house(Vector3(25, 0, 10), 7, 7, "W", "")
+	add_rect_obstacle(25, 10, 3.2, 3.2)
+	_nordic_house(Vector3(-30, 0, -8), 7, 7, "E", "")
+	add_rect_obstacle(-30, -8, 3.2, 3.2)
+	_nordic_house(Vector3(30, 0, -10), 7, 7, "W", "")
+	add_rect_obstacle(30, -10, 3.2, 3.2)
+	_nordic_house(Vector3(-34, 0, 14), 7, 7, "E", "")
+	add_rect_obstacle(-34, 14, 3.2, 3.2)
+	_nordic_house(Vector3(20, 0, 32), 8, 7, "N", "")
+	add_rect_obstacle(20, 32, 3.7, 3.2)
+	# 深渊之门（北门）与东郊哨站（东门）。
+	_build_abyss_gate(poi_pos("abyss_gate") + Vector3(0, 0, -4))
+	_build_east_gate(Vector3(TOWN_HALF, 0, 0))
+	# 告示板（广场边）。
+	_build_board(poi_pos("board"))
+	add_rect_obstacle(-6.5, 7.0, 0.5, 1.4)
+
+## 北欧长屋：石基座 + 木构墙体（门窗件）+ 高坡双坡屋顶 + 烟囱。
+## center=建筑中心，w×d=占地，facing=门朝向（N/S/E/W），tag=功能标识（空=民居）。
+func _nordic_house(center: Vector3, w: float, d: float, facing: String, tag: String) -> void:
+	var b := Node3D.new()
+	add_child(b)
+	b.position = center
+	match facing:
+		"N": b.rotation.y = PI
+		"E": b.rotation.y = PI * 0.5
+		"W": b.rotation.y = -PI * 0.5
+		_: b.rotation.y = 0.0
+	var base_y := 0.7  # 石基座高度
+	# 石基座（北欧长屋的木构多架在石基上）。
+	GeoBuilder.box(b, w + 0.5, base_y, d + 0.5, Color(0.43, 0.42, 0.39), Vector3(0, base_y * 0.5, 0))
+	# 墙件本地朝向：长度沿 Z、厚度沿 X（实测 AABB 0.10×1.0×1.0）。
+	var wsize := AssetLib.size_of("town/wall-wood.glb")
+	var cols := maxi(2, ceili(w / 3.0))
+	var rows := maxi(2, ceili(d / 3.0))
+	var sw := w / float(cols)
+	var sd := d / float(rows)
+	var s := sw / maxf(wsize.z, 0.01)
+	var wall_h := wsize.y * s
+	var door_idx := cols / 2
+	for i in range(cols):
+		var x := -w * 0.5 + sw * (i + 0.5)
+		var is_door := i == door_idx
+		# 南墙（本地 +Z）：门/窗。北墙（本地 -Z）：背墙。
+		var front := "town/wall-wood-door.glb" if is_door else ("town/wall-wood-window-glass.glb" if i % 2 == 1 else "town/wall-wood.glb")
+		AssetLib.spawn_wide(b, front, sw, Vector3(x, base_y, d * 0.5), 90.0)
+		AssetLib.spawn_wide(b, "town/wall-wood-window-glass.glb" if i % 2 == 1 else "town/wall-wood.glb", sw, Vector3(x, base_y, -d * 0.5), 90.0)
+	for j in range(rows):
+		var z := -d * 0.5 + sd * (j + 0.5)
+		AssetLib.spawn_wide(b, "town/wall-wood-window-shutters.glb", sd, Vector3(-w * 0.5, base_y, z), 0.0)
+		AssetLib.spawn_wide(b, "town/wall-wood-window-glass.glb", sd, Vector3(w * 0.5, base_y, z), 0.0)
+	# 高坡双坡屋顶（屋脊沿本地 X，山墙在 ±Z 端）。
+	var roof_y := base_y + wall_h - 0.12
+	AssetLib.spawn_fit(b, "town/roof-high-gable.glb", w + 0.9, d + 0.9, Vector3(0, roof_y, 0))
+	AssetLib.spawn_fit(b, "town/roof-high-gable-end.glb", w + 0.92, d + 0.92, Vector3(0, roof_y, 0))
+	# 烟囱。
+	AssetLib.spawn_norm(b, "town/chimney.glb", 2.6, Vector3(w * 0.26, roof_y + wall_h * 0.35, -d * 0.16), 0, "y")
+	# 门口木桶（纯装饰，无碰撞）。
+	AssetLib.spawn_norm(b, "dungeon/kay/barrel_small.gltf.glb", 0.85, Vector3(-w * 0.5 + 1.1, base_y, d * 0.5 + 0.8), 0, "y")
+	# 功能标识与暖光。
+	match tag:
+		"smithy":
+			AssetLib.spawn_norm(b, "dungeon/kay/keg.gltf.glb", 1.0, Vector3(w * 0.5 - 1.0, base_y, d * 0.5 + 0.9), 0, "y")
+			var forge := OmniLight3D.new()
+			forge.light_color = Color(1.0, 0.45, 0.15)
+			forge.light_energy = 3.0
+			forge.omni_range = 6.5
+			forge.position = Vector3(1.4, 1.3, d * 0.5 + 1.4)
+			b.add_child(forge)
+			_lamps.append(forge)
+		"apothecary":
+			AssetLib.spawn_norm(b, "dungeon/kay/bottle_A_green.gltf.glb", 0.55, Vector3(-1.2, base_y + 0.9, d * 0.5 + 0.7), 0, "y")
+			AssetLib.spawn_norm(b, "dungeon/kay/bottle_A_brown.gltf.glb", 0.45, Vector3(-0.7, base_y + 0.9, d * 0.5 + 0.7), 0, "y")
+		"guild":
+			AssetLib.spawn_wide(b, "town/banner-red.glb", 1.1, Vector3(0, base_y + wall_h - 0.4, d * 0.5 + 0.28))
+			var gl := OmniLight3D.new()
+			gl.light_color = Color(1.0, 0.78, 0.45)
+			gl.light_energy = 2.0
+			gl.omni_range = 6.5
+			gl.position = Vector3(0, base_y + wall_h * 0.8, d * 0.5 + 0.7)
+			b.add_child(gl)
+			_lamps.append(gl)
+
+## 图书馆：石塔 + 穹顶（石砌加高 + 西向大门）。
+func _build_library_tower(pos: Vector3) -> void:
+	var s := Node3D.new()
+	add_child(s)
+	s.position = pos
+	var body := GeoBuilder.cylinder(s, 3.0, 3.4, 7.2, Color(0.40, 0.39, 0.36), Vector3(0, 3.6, 0), 12)
+	body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	GeoBuilder.cylinder(s, 0.4, 3.0, 1.6, Color(0.33, 0.32, 0.30), Vector3(0, 8.0, 0), 12)
+	GeoBuilder.cylinder(s, 0.05, 2.3, 2.8, Color(0.34, 0.22, 0.16), Vector3(0, 9.6, 0), 12)
+	# 西向大门与石阶（面向广场）。
+	GeoBuilder.box(s, 1.5, 2.7, 0.35, Color(0.16, 0.13, 0.1), Vector3(-3.3, 1.35, 0))
+	GeoBuilder.box(s, 1.8, 0.25, 1.3, Color(0.44, 0.43, 0.40), Vector3(-3.9, 0.12, 0))
+	AssetLib.spawn_wide(s, "town/banner-green.glb", 1.0, Vector3(-3.5, 4.8, 0), -90)
+	var lamp := OmniLight3D.new()
+	lamp.light_color = Color(0.72, 0.62, 0.92)
+	lamp.light_energy = 3.0
+	lamp.omni_range = 8.0
+	lamp.position = Vector3(0, 6.4, 0)
+	s.add_child(lamp)
+	_lamps.append(lamp)
+
+## 中央广场：石砌水井（偏北，让开主街交叉口）+ 四角火盆。
+func _build_plaza() -> void:
+	_build_well(Vector3(0, 0, -5.8))
+	for a in [0.25, 0.75, 1.25, 1.75]:
+		_build_brazier(Vector3(cos(a * PI) * 8.4, 0, sin(a * PI) * 8.4))
+
+## 石砌水井：石圈井台 + 木架顶棚 + 吊桶（北欧市集的地标）。
+func _build_well(pos: Vector3) -> void:
+	var w := Node3D.new()
+	add_child(w)
+	w.position = pos
+	GeoBuilder.cylinder(w, 1.5, 1.62, 0.9, Color(0.44, 0.43, 0.40), Vector3(0, 0.45, 0), 14)
+	GeoBuilder.cylinder(w, 1.14, 1.14, 0.16, Color(0.09, 0.11, 0.14), Vector3(0, 0.9, 0), 14)
+	for sx in [-1.25, 1.25]:
+		GeoBuilder.box(w, 0.18, 2.0, 0.18, Color(0.32, 0.24, 0.15), Vector3(sx, 2.0, 0))
+	GeoBuilder.box(w, 2.9, 0.2, 0.22, Color(0.34, 0.25, 0.16), Vector3(0, 3.0, 0))
+	var winch := GeoBuilder.cylinder(w, 0.13, 0.13, 2.6, Color(0.30, 0.22, 0.14), Vector3(0, 2.55, 0), 8)
+	winch.rotation.z = PI * 0.5
+	GeoBuilder.box(w, 0.42, 0.44, 0.42, Color(0.28, 0.21, 0.13), Vector3(0, 2.0, 0))
+	AssetLib.spawn_fit(w, "town/roof-gable.glb", 3.7, 2.5, Vector3(0, 3.1, 0))
+	add_circ_obstacle(pos.x, pos.z, 1.7)
+
+## 街道装饰：路灯、行道树、市集货摊、货车货箱、风车、篱笆、花丛。
+func _build_decor() -> void:
+	# 主街路灯（沿人行道，夜间自动点亮）。
+	for pos in [Vector3(-4.7, 0, 32), Vector3(4.7, 0, 32), Vector3(-4.7, 0, 20), Vector3(4.7, 0, 20),
+			Vector3(-4.7, 0, -20), Vector3(4.7, 0, -20), Vector3(-4.7, 0, -32), Vector3(4.7, 0, -32)]:
+		_build_lantern(pos)
+	# 广场周边市集货摊（避开主街与寻路通道）。
+	AssetLib.spawn_norm(self, "town/stall-red.glb", 1.9, Vector3(-8.2, 0, 8.2), 135, "y")
+	add_rect_obstacle(-8.2, 8.2, 1.2, 1.2)
+	AssetLib.spawn_norm(self, "town/stall-green.glb", 1.9, Vector3(8.2, 0, -8.2), -45, "y")
+	add_rect_obstacle(8.2, -8.2, 1.2, 1.2)
+	AssetLib.spawn_norm(self, "town/stall.glb", 1.9, Vector3(8.6, 0, 8.6), -135, "y")
+	add_rect_obstacle(8.6, 8.6, 1.2, 1.2)
+	# 城门口货车与货箱。
+	AssetLib.spawn_norm(self, "town/cart-high.glb", 1.8, Vector3(38, 0, -5.5), -70, "y")
+	add_circ_obstacle(38, -5.5, 1.4)
+	AssetLib.spawn_norm(self, "dungeon/kay/crates_stacked.gltf.glb", 1.5, Vector3(38.5, 0, 5.4), 20, "y")
+	add_circ_obstacle(38.5, 5.4, 1.0)
+	AssetLib.spawn_norm(self, "town/cart.glb", 1.7, Vector3(-38, 0, 5.6), 110, "y")
+	add_circ_obstacle(-38, 5.6, 1.3)
+	# 西北角风车（地标）。
+	AssetLib.spawn_norm(self, "town/windmill.glb", 10.0, Vector3(-36, 0, -36), 30, "y")
+	add_circ_obstacle(-36, -36, 2.4)
+	# 行道树（避开街道与建筑）。
+	var tree_rels := ["town/tree-high-round.glb", "town/tree.glb", "town/tree-crooked.glb", "nature/tree_oak.glb"]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 8128
+	for i in range(22):
+		var x := (1.0 if i % 2 == 0 else -1.0) * (16.0 + rng.randf() * 24.0)
+		var z := -38.0 + rng.randf() * 76.0
+		var pos := Vector3(x, 0, z)
+		if not _walkable(pos): continue
+		AssetLib.spawn_norm(self, tree_rels[i % tree_rels.size()], 5.0 + rng.randf() * 2.5, pos, rng.randf() * 360.0, "y")
+		add_circ_obstacle(pos.x, pos.z, 0.7)
+	# 城墙根篱笆与石块。
+	for i in range(8):
+		var a := TAU * i / 8.0 + 0.4
+		var x := cos(a) * 42.0
+		var z := sin(a) * 42.0
+		if absf(x) < 8.0 or absf(z) < 8.0: continue  # 让开主街
+		AssetLib.spawn_norm(self, "town/hedge.glb", 1.3, Vector3(x, 0, z), randf() * 360.0, "y")
+		add_circ_obstacle(x, z, 0.8)
+	AssetLib.spawn_norm(self, "town/rock-large.glb", 2.6, Vector3(-30, 0, 26), 15, "h")
+	add_circ_obstacle(-30, 26, 1.2)
+	AssetLib.spawn_norm(self, "town/rock-wide.glb", 2.2, Vector3(31, 0, -31), 40, "h")
+	add_circ_obstacle(31, -31, 1.0)
+	# 草地花丛点缀（无碰撞）。
+	for i in range(34):
+		var a2 := rng.randf() * TAU
+		var r2 := 13.0 + rng.randf() * 31.0
+		var p := Vector3(cos(a2) * r2, 0, sin(a2) * r2)
+		if not _walkable(p): continue
+		var flower := "nature/flower_yellowA.glb" if i % 2 == 0 else "nature/flower_purpleA.glb"
+		AssetLib.spawn_norm(self, flower, 0.4, p, rng.randf() * 360.0, "y")
+
+## 路灯：灯柱 + 灯笼 + 夜间暖光。
+func _build_lantern(pos: Vector3) -> void:
+	AssetLib.spawn_norm(self, "town/lantern.glb", 3.2, pos, 0, "y")
+	add_circ_obstacle(pos.x, pos.z, 0.35)
+	var l := OmniLight3D.new()
+	l.light_color = Color(1.0, 0.80, 0.50)
+	l.light_energy = 2.4
+	l.omni_range = 7.0
+	l.position = pos + Vector3(0, 2.8, 0)
+	add_child(l)
+	_lamps.append(l)
+
+## 修炼场：木栅围栏（东侧留口）+ 木桩假人。
+func _build_training_ground() -> void:
+	var c := Vector3(-32, 0, 33)
+	var s := Node3D.new()
+	add_child(s)
+	s.position = c
+	GeoBuilder.cylinder(s, 6.0, 6.4, 0.06, Color(0.34, 0.32, 0.29), Vector3(0, 0.03, 0), 26)
+	# 围栏（圆形布置，东侧 ±0.55rad 留口，正对城内来路）。
+	var n := 20
+	for i in range(n):
+		var a := TAU * float(i) / float(n)
+		if absf(wrapf(a, -PI, PI)) < 0.55: continue  # 东口
+		var p := Vector3(cos(a) * 6.2, 0, sin(a) * 6.2)
+		AssetLib.spawn_wide(s, "town/fence.glb", 2.1, p, rad_to_deg(-a))  # 长度沿本地 Z，-a 使其切向贴合圆周
+		add_circ_obstacle(c.x + p.x, c.z + p.z, 0.85)
+	# 木桩假人 ×3（南北排开）。
+	for i in range(3):
+		var dz := -2.4 + i * 2.4
+		GeoBuilder.cylinder(s, 0.16, 0.2, 1.7, Color(0.36, 0.3, 0.22), Vector3(0, 0.85, dz), 8)
+		GeoBuilder.cylinder(s, 0.3, 0.3, 0.4, Color(0.3, 0.24, 0.18), Vector3(0, 1.9, dz), 8)
+		GeoBuilder.box(s, 1.6, 0.13, 0.13, Color(0.3, 0.24, 0.16), Vector3(0, 1.45, dz))
+		add_circ_obstacle(c.x, c.z + dz, 0.45)
+	# 武器架。
+	GeoBuilder.box(s, 0.1, 1.6, 0.1, Color(0.26, 0.2, 0.14), Vector3(-3.6, 0.8, 0))
+	GeoBuilder.box(s, 0.1, 1.6, 0.1, Color(0.26, 0.2, 0.14), Vector3(-3.6, 0.8, 1.4))
+	GeoBuilder.box(s, 0.14, 0.14, 1.5, Color(0.3, 0.24, 0.16), Vector3(-3.6, 1.5, 0.7))
+	add_circ_obstacle(c.x - 3.6, c.z + 0.7, 0.9)
+
+func _build_abyss_gate(pos: Vector3) -> void:
+	var arch := Ambience.gothic_arch(self, 5.2, 6.4, 0.9, Color(0.14, 0.13, 0.17))
+	arch.position = pos
+	var veil := GeoBuilder.mesh_instance(self, GeoBuilder.box_geometry(3.0, 5.0, 0.08),
+		GeoBuilder.mat(Color(0.45, 0.3, 0.8, 0.35), {"transparent": true, "unshaded": true, "depth_write": false}),
+		pos + Vector3(0, 2.5, 0), false)
+	veil.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var glow := OmniLight3D.new()
+	glow.light_color = Color(0.6, 0.4, 0.95)
+	glow.light_energy = 5.0
+	glow.omni_range = 9.0
+	glow.position = pos + Vector3(0, 2.6, 0)
+	add_child(glow)
+	add_circ_obstacle(pos.x - 2.6, pos.z, 1.0)
+	add_circ_obstacle(pos.x + 2.6, pos.z, 1.0)
+
+func _build_east_gate(center: Vector3) -> void:
+	var s := Node3D.new()
+	add_child(s)
+	s.position = center
+	# 木制哨站门（门洞在墙上，两侧柱已在 _build_walls 注册）。
+	GeoBuilder.box(s, 0.5, 4.6, 0.5, Color(0.32, 0.26, 0.18), Vector3(0, 2.3, -3.4))
+	GeoBuilder.box(s, 0.5, 4.6, 0.5, Color(0.32, 0.26, 0.18), Vector3(0, 2.3, 3.4))
+	GeoBuilder.box(s, 0.6, 0.35, 7.6, Color(0.28, 0.22, 0.16), Vector3(0, 4.7, 0))
+	# 火盆。
+	AssetLib.spawn_norm(s, "dungeon/graveyard/fire-basket.glb", 1.2, Vector3(-1.6, 0, -2.2), 0, "y")
+
+func _build_board(pos: Vector3) -> void:
+	var s := Node3D.new()
+	add_child(s)
+	s.position = pos
+	s.rotation.y = PI / 2  # 面朝主街（东侧）
+	GeoBuilder.box(s, 0.16, 2.2, 0.16, Color(0.3, 0.24, 0.16), Vector3(-1.0, 1.1, 0))
+	GeoBuilder.box(s, 0.16, 2.2, 0.16, Color(0.3, 0.24, 0.16), Vector3(1.0, 1.1, 0))
+	GeoBuilder.box(s, 2.4, 1.5, 0.1, Color(0.4, 0.33, 0.22), Vector3(0, 1.6, 0))
+	for i in range(3):
+		GeoBuilder.box(s, 0.4, 0.55, 0.02, Color(0.75, 0.7, 0.58), Vector3(-0.7 + i * 0.7, 1.6 + (0.1 if i == 1 else 0.0), 0.07))
+
+# ---------------- 玩家 / NPC / 随行 ----------------
+func _build_player() -> void:
+	player = Actor.new()
+	player.faction = "player"
+	player.display_name = "你"
+	player.name = "Player"
+	player.show_bar = false
+	add_child(player)
+	var rig := ActorRig.new(GameState.save.selected, 741)
+	player.add_child(rig)
+	player.rig = rig
+	player.global_position = player_position
+
+func _spawn_npcs() -> void:
+	# NpcBook：rowan 协会 / mira 药摊 / kane 东门 / sylphie 图书馆 / borin 修炼场。
+	# NPC 用 KayKit 冒险者 GLB（CC0），站位跟随新建筑门口。
+	var spots := {
+		"rowan": Vector3(-10.6, 0, -8.6),
+		"mira": Vector3(7.6, 0, 12.6),
+		"kane": Vector3(40.5, 0, 2.6),
+		"sylphie": Vector3(13.2, 0, -3.0),
+		"borin": Vector3(-25.0, 0, 32.0),
+	}
+	for npc_id in spots:
+		var def: Dictionary = NpcBook.NPCS[npc_id]
+		var a := Actor.new()
+		a.faction = "ally"
+		a.display_name = def.name
+		a.show_bar = false
+		add_child(a)
+		a.global_position = spots[npc_id]
+		a.rotation.y = randf() * TAU
+		var vis := Node3D.new()
+		a.add_child(vis)
+		# NPC 身高归一化（KayKit 原始模型 2.2~3.0m，压到 1.8m 与玩家比例协调）。
+		var model_rel := AssetLib.npc_model(def.get("rig", "warrior"))
+		AssetLib.spawn_norm(vis, model_rel, 1.8, Vector3.ZERO, 0.0, "y")
+		AssetLib.prune_weapon_variants(vis, AssetLib.default_weapons_for_model(model_rel))
+		AssetLib.play_clip(vis, AssetLib.ANIM_IDLE, true)
+		a.set_meta("npc_id", npc_id)
+		a.set_meta("home", spots[npc_id])
+		npcs.append(a)
+
+## 同步随行者（出战宠物 + 已招募同伴）。
+func _sync_followers() -> void:
+	for f in followers: f.dispose()
+	followers.clear()
+	if GameState.active_pet_valid():
+		var pet := Follower.new()
+		pet.world = self
+		add_child(pet)
+		pet.setup_pet()
+		pet.follow_slot = followers.size()
+		pet.global_position = player.global_position + Vector3(1.5, 0, 1.5)
+		pet.blocked_check = _walkable
+		followers.append(pet)
+	for npc_id in GameState.save.party:
+		var comp := Follower.new()
+		comp.world = self
+		comp.setup_companion(npc_id)  # 必须先定型再入树：_ready→_build_visual 依赖 kind/npc_id
+		add_child(comp)
+		comp.follow_slot = followers.size()
+		comp.global_position = player.global_position + Vector3(-1.5, 0, 1.5)
+		comp.blocked_check = _walkable
+		followers.append(comp)
+
+func on_enter() -> void:
+	if player == null: return
+	player.global_position = player_position
+	_sync_followers()
+	hud_changed.emit()
+
+# ---------------- 寻路 / 移动 ----------------
+func handle_click(cam: Camera3D, mouse: Vector2) -> void:
+	var plane := Plane(Vector3.UP, 0.0)
+	var hit = plane.intersects_ray(cam.project_ray_origin(mouse), cam.project_ray_normal(mouse))
+	if hit and absf(hit.x) < TOWN_HALF - 1.0 and absf(hit.z) < TOWN_HALF - 1.0:
+		move_target = hit
+		has_move_target = true
+		pending_interact = ""
+		move_marker.global_position = hit
+		move_marker.visible = true
+
+## UI 寻路：走向目标 POI（approach 停靠点）。
+func travel_to_poi(poi) -> void:
+	if poi == null or not poi is Dictionary: return
 	destination_poi = poi
-	move_marker.position = found[found.size() - 1]
-	move_marker.position.y = 0.02
+	move_target = poi.get("approach", poi.position + Vector3(0, 0, 3.0))
+	has_move_target = true
+	move_marker.global_position = move_target
 	move_marker.visible = true
-	return true
+	path = [move_target]
+	toast_requested.emit("启程前往 %s" % poi.get("name", "?"))
 
-func poi_available(poi: Dictionary) -> bool:
-	return poi.type != "ember" or (GameState.save.quest == "active" and not GameState.save.embers.has(poi.id))
-
-func travel_to_poi(poi: Dictionary) -> void:
-	if not poi_available(poi): return
-	dialog_closed.emit()
-	if player_position.distance_to(poi.destination) < 1.0:
-		poi.on_interact.call()
-		return
-	if set_path(poi.destination, poi):
-		toast_requested.emit("正在前往%s…" % poi.name)
-
+## 任务指引：走向告示板。
 func track_quest() -> void:
-	var save = GameState.save
-	var id: String
-	if save.quest == "new": id = "board"
-	elif save.quest == "complete": id = "gate"
-	elif save.embers.size() == 3: id = "shrine"
-	else:
-		for eid in ["ember0", "ember1", "ember2"]:
-			if not save.embers.has(eid): id = eid; break
-	for poi in pois:
-		if poi.id == id:
-			travel_to_poi(poi)
-			return
+	travel_to_poi(_poi_by_id("board"))
+
+## POI 图标点击：附近直接交互，远处寻路 + 到达自动打开。
+func poi_icon_clicked(pid: String) -> void:
+	var p := _poi_by_id(pid)
+	if p.is_empty(): return
+	var d := Vector2(player.global_position.x - p.position.x, player.global_position.z - p.position.z).length()
+	if d < 5.0:
+		_interact_poi(p)
+		return
+	pending_interact = pid
+	travel_to_poi(p)
+	toast_requested.emit("前往 %s（到达后自动打开）" % p.get("name", "?"))
+
+func _walkable_public(pos: Vector3) -> bool:
+	return _walkable(pos)
 
 # ---------------- 交互 ----------------
+## 每帧：计算附近 POI / NPC。
+func _update_near() -> void:
+	near_poi = null
+	var best_d := 3.6
+	for p in pois:
+		var d: float = Vector2(player.global_position.x - p.position.x, player.global_position.z - p.position.z).length()
+		if d < best_d:
+			best_d = d
+			near_poi = p
 
-func handle_click(camera: Camera3D) -> void:
-	var mouse := get_viewport().get_mouse_position()
-	var from := camera.project_ray_origin(mouse)
-	var dir := camera.project_ray_normal(mouse)
-	if abs(dir.y) < 0.0001: return
-	var t := (0.05 - from.y) / dir.y
-	if t < 0: return
-	var hit := from + dir * t
-	set_path(hit)
+func poi_available(poi) -> bool:
+	if poi == null: return false
+	return true  # 所有 POI 均可交互
 
+## E 键：优先 POI，其次 NPC。
 func interact_near() -> void:
-	if near_poi and poi_available(near_poi):
-		path.clear()
-		destination_poi = {}
-		move_marker.visible = false
-		near_poi.on_interact.call()
+	if near_poi:
+		_interact_poi(near_poi)
+		return
+	# 找最近 NPC。
+	var best = null
+	var best_d := 3.0
+	for n in npcs:
+		var d: float = n.global_position.distance_to(player.global_position)
+		if d < best_d:
+			best_d = d
+			best = n
+	if best:
+		_talk_npc(best)
 
-func refresh_quest_visibility() -> void:
-	var active: bool = GameState.save.quest == "active"
-	for id in collectible_meshes:
-		collectible_meshes[id].visible = active and not GameState.save.embers.has(id)
+func _interact_poi(poi: Dictionary) -> void:
+	match poi.id:
+		"smithy": _dialog_smithy()
+		"apothecary": _dialog_apothecary()
+		"guild": _dialog_guild()
+		"library": _dialog_library()
+		"training": _dialog_training()
+		"abyss_gate": _confirm_abyss()
+		"east_gate": enter_overworld_requested.emit()
+		"board": _dialog_board()
 
-# ---------------- 帧更新 ----------------
+func _confirm_abyss() -> void:
+	dialog_requested.emit("深渊之门", "门后的黑暗在呼吸。第一层 · 废弃圣堂。\n深渊里失去的血量与金币不可全数带回。", [
+		{"label": "推门而入", "run": func(): enter_dungeon_requested.emit()},
+		{"label": "再等等", "run": func(): dialog_closed.emit(), "secondary": true},
+	], "THE ABYSS WAITS")
 
-func update_town(delta: float, _camera_rig: CameraRig) -> void:
-	_elapsed += delta
-	if _dummy_reset_timer > 0:
-		_dummy_reset_timer -= delta
-		if _dummy_reset_timer <= 0 and dummy_node:
-			dummy_node.rotation.z = 0
-	var ui_blocked: bool = main != null and main.ui != null and main.ui.is_dialog_open()
-	var previous := player_position
-	var velocity := Vector3.ZERO
-	if not ui_blocked:
-		var up := Input.is_action_pressed("move_up")
-		var down := Input.is_action_pressed("move_down")
-		var left := Input.is_action_pressed("move_left")
-		var right := Input.is_action_pressed("move_right")
-		if up or down or left or right:
-			path.clear()
-			destination_poi = {}
-			move_marker.visible = false
-			var forward := Vector3(-0.6, 0, -0.8).normalized()
-			var rightv := Vector3(0.8, 0, -0.6).normalized()
-			velocity += forward * (float(up) - float(down))
-			velocity += rightv * (float(right) - float(left))
-		elif not path.is_empty():
-			var waypoint := path[0]
-			if player_position.distance_to(waypoint) < 0.09:
-				path.remove_at(0)
-				if not path.is_empty(): waypoint = path[0]
-			if not path.is_empty():
-				velocity = waypoint - player_position
+# ---- 武器商家 ----
+func _dialog_smithy() -> void:
+	if _shop_wares.is_empty():
+		var rng := RandomNumberGenerator.new()
+		rng.randomize()
+		for i in range(3):
+			_shop_wares.append(Items.roll_weapon(rng, GameState.save.selected, 0, 0.2))
+	var content := "炉火映着半张脸。「看看货，或者强化你手上的家伙。」\n"
+	var actions := []
+	for i in range(_shop_wares.size()):
+		var w: Dictionary = _shop_wares[i]
+		var price: int = 45 + int(w.rarity) * 50 + Items.weapon_atk(w)
+		content += "\n%d. [color=#%s]%s[/color] —— %d 金币" % [i + 1,
+			Color(0.9, 0.7, 0.3).to_html(false) if int(w.rarity) >= 3 else Color(0.8, 0.8, 0.8).to_html(false),
+			Items.item_desc(w).split("\n")[0], price]
+		var wi := w
+		actions.append({"label": "买 %d（%d金）" % [i + 1, price], "run": func():
+			if GameState.spend_gold(price):
+				if GameState.pickup_item(wi.duplicate()):
+					_shop_wares.erase(wi)
+					toast_requested.emit("铁匠用布擦了擦刃口递给你。")
+				else:
+					GameState.add_gold(price)
+					toast_requested.emit("背包满了。")
 			else:
-				move_marker.visible = false
-				var target := destination_poi
-				destination_poi = {}
-				if target and player_position.distance_to(target.destination) < 1.3:
-					target.on_interact.call()
-		var remaining := velocity.length()
-		if remaining > 0.001:
-			var speed: float = GameState.class_data().walk_speed * (1.6 if Input.is_action_pressed("run") else 1.0)
-			velocity = velocity.normalized() * min(speed * delta, remaining if not path.is_empty() else INF)
-			if _walkable(player_position.x + velocity.x, player_position.z): player_position.x += velocity.x
-			if _walkable(player_position.x, player_position.z + velocity.z): player_position.z += velocity.z
-	var moved := player_position.distance_to(previous)
-	moving = moved > 0.0005
-	if moving:
-		var direction := player_position - previous
-		var target_yaw := atan2(direction.x, direction.z)
-		player_yaw += atan2(sin(target_yaw - player_yaw), cos(target_yaw - player_yaw)) * min(1.0, delta * 14)
-		walk_phase += moved * 10
-	var active = main.active_character() if main else null
-	if active:
-		active.position = player_position
-		active.rotation.y = player_yaw
-		active.animate_pose(delta, _elapsed, {"type": "walk", "step": walk_phase} if moving else {"type": "idle"})
-	for npc in town_npcs:
-		npc.animate_pose(delta, _elapsed, {"type": "idle"})
-	# 最近 POI。
-	near_poi = {}
-	var distance := 1.5
-	for poi in pois:
-		var d := player_position.distance_to(poi.destination)
-		if poi_available(poi) and d < distance:
-			near_poi = poi
-			distance = d
-	# 火焰闪烁。
-	for f in flames:
-		var flicker := 1.0 + sin(_elapsed * 11.0 + f.phase) * 0.14 + sin(_elapsed * 23.0 + f.phase * 1.7) * 0.07
-		if f.node:
-			f.node.scale = Vector3(1, f.base * 0.55 * flicker, 1)
-			if f.shrine and GameState.save.quest != "complete":
-				f.node.scale *= 0.45
-		if f.light:
-			f.light.light_energy = 2.6 * flicker * (1.0 if GameState.save.quest == "complete" or not f.shrine else 0.4)
-	# 余火旋转。
-	for id in collectible_meshes:
-		var c: Node3D = collectible_meshes[id]
-		if c.visible:
-			c.rotation.y += delta * 1.2
-			c.position.y = 0.55 + sin(_elapsed * 2.0) * 0.06
-	# 移动标记脉冲。
-	if move_marker.visible:
-		move_marker.scale = Vector3.ONE * (1.0 + sin(_elapsed * 6.0) * 0.12)
-
-# ---------------- 对话 ----------------
-
-func _collect_ember(id: String) -> void:
-	var save = GameState.save
-	if save.quest != "active" or save.embers.has(id): return
-	GameState.add_ember(id)
-	refresh_quest_visibility()
-	hud_changed.emit()
-	AudioBus.play_tone(523, 0.5)
-	toast_requested.emit("三簇余火已集齐。回到祭坛，点亮长夜。" if save.embers.size() == 3 else "余火已拾取 · %d / 3" % save.embers.size())
-
-func _board_dialog() -> void:
-	var save = GameState.save
-	if save.quest == "new":
-		dialog_requested.emit("庇护所的余火",
-			"<p class='dialog-speaker'>一张被雨水打湿的告示</p><p>“中央祭坛的火正在变冷。若还有旅人愿意帮忙，请找回散落在广场的 <b>三簇余火</b>。”</p><p>收集后前往余火祭坛，可获得 <b>60 余烬币</b>，并点亮城中的长夜。</p>",
-			[
-				{"label": "接下委托", "run": func():
-					if GameState.save.quest != "new": return
-					GameState.set_quest("active")
-					refresh_quest_visibility()
-					hud_changed.emit()
-					dialog_closed.emit()
-					toast_requested.emit("委托已接取 · 三簇余火已在城中标记。")
-					AudioBus.play_tone(330, 0.3)},
-				{"label": "稍后再来", "run": func(): dialog_closed.emit(), "secondary": true},
-			], "A REQUEST IN THE RAIN")
-	else:
-		var complete: bool = save.quest == "complete"
-		dialog_requested.emit("告示板 · 余火已归" if complete else "告示板 · 委托进行中",
-			"<p>%s</p>" % ("“谢谢你，陌生人。只要余火还亮着，这里就还是我们的家。”" if complete else "已经找回 <b>%d / 3</b> 簇余火。沿城中的金色标记寻找，完成后回到中央祭坛。" % save.embers.size()),
-			[{"label": "继续旅途", "run": func(): dialog_closed.emit()}])
-
-func _shrine_dialog() -> void:
-	var save = GameState.save
-	var ready: bool = save.quest == "active" and save.embers.size() == 3
-	var text := "你掌心的碎片与祭坛共鸣。将它们送回火中，让庇护所再次看见黎明。" if ready else ("金色的火焰轻轻摇曳。旧神的低语在这里短暂远去，你可以安心歇息。" if save.quest == "complete" else "火光微弱，却仍有温度。在此休憩可以恢复所有生命。")
-	var actions: Array = []
-	if ready:
-		actions.append({"label": "归还余火 · 领取 60 余烬币", "run": func():
-			if GameState.save.quest != "active" or GameState.save.embers.size() != 3: return
-			GameState.set_quest("complete")
-			GameState.add_gold(60)
-			GameState.set_hp(100)
-			refresh_quest_visibility()
-			hud_changed.emit()
-			dialog_closed.emit()
-			AudioBus.play_tone(392, 1.0)
-			toast_requested.emit("余火重燃 · 委托完成 · +60 余烬币")})
-	actions.append({"label": "在火边休憩", "run": func():
-		GameState.set_hp(100)
-		hud_changed.emit()
-		dialog_closed.emit()
-		toast_requested.emit("温暖驱散疲惫 · 生命已全部恢复")})
+				toast_requested.emit("金币不足。")})
+	if GameState.save.weapon != null:
+		actions.append({"label": "强化武器", "run": func():
+			if GameState.upgrade_weapon():
+				toast_requested.emit("锤声笃笃——武器强化成功！")
+				hud_changed.emit()
+			dialog_closed.emit()})
 	actions.append({"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true})
-	dialog_requested.emit("余火祭坛", "<p class='dialog-speaker'>石碗中传来微弱的心跳</p><p>%s</p>" % text, actions, "WHERE THE EMBERS REMAIN")
+	dialog_requested.emit("武器商家 · 铁炉堡", content, actions, "THE SMITHY")
 
-func _smith_dialog() -> void:
-	var save = GameState.save
-	var cost: int = 30 + save.upgrade * 15
-	dialog_requested.emit("铁匠 · 霍尔德",
-		"<p class='dialog-speaker'>“火还没灭，就有活可干。”</p><p>当前武器：<b>%s +%d</b></p><p>锻造提升训练伤害，每级增加 4 点。%s</p>" % [
-			"古林长弓" if GameState.is_archer() else "旧国战锤", save.upgrade,
-			"这件武器已达到本章锻造上限。" if save.upgrade >= 3 else "下一次锻造需要 <b>%d 余烬币</b>。" % cost],
-		[
-			{"label": "已完成全部锻造" if save.upgrade >= 3 else "锻造武器 · %d 币" % cost, "disabled": save.upgrade >= 3 or save.gold < cost, "run": func():
-				var c: int = 30 + GameState.save.upgrade * 15
-				if GameState.save.upgrade >= 3 or GameState.save.gold < c: return
-				GameState.add_gold(-c)
-				GameState.save.upgrade += 1
-				GameState.persist()
+# ---- 道具商家 ----
+func _dialog_apothecary() -> void:
+	var content := "药草味扑面而来。「要补给，还是有东西要出手？」\n"
+	var actions := []
+	for id in ["potion_hp", "potion_mp", "torch", "net"]:
+		var price: int = SHOP_PRICES[id]
+		var inst: Dictionary = Items.stack_item(id)
+		content += "\n· [color=#cfcabb]%s[/color] —— %d 金币" % [inst.name, price]
+		var iid: String = id
+		actions.append({"label": "买 %s" % inst.name, "run": func():
+			if GameState.spend_gold(price):
+				if not GameState.pickup_item(Items.stack_item(iid)):
+					GameState.add_gold(price)
+					toast_requested.emit("背包满了。")
+				else:
+					toast_requested.emit("买下了 %s。" % Items.stack_item(iid).name)
+			else:
+				toast_requested.emit("金币不足。")})
+	for id2 in ["herb", "pelt", "shard"]:
+		var iid2: String = id2
+		actions.append({"label": "卖 %s（+%d金）" % [Items.stack_item(id2).name, SELL_PRICES[id2]], "run": func():
+			if GameState.inventory.count_of(iid2) > 0:
+				GameState.inventory.remove(iid2, 1)
+				GameState.add_gold(SELL_PRICES[iid2])
+				toast_requested.emit("成交。")
+			else:
+				toast_requested.emit("你没有这个。")})
+	actions.append({"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true})
+	dialog_requested.emit("道具商家 · 雾角药庐", content, actions, "THE APOTHECARY")
+
+# ---- 冒险者协会 ----
+func _dialog_guild() -> void:
+	var content := "「冒险者，名单上有你的名字。」\n"
+	var actions := []
+	for q in QuestBook.SIDE_QUESTS:
+		var st = GameState.save.quests.side.get(q.id)
+		if st == null:
+			actions.append({"label": "接取：" + q.name, "run": func():
+				GameState.accept_side_quest(q.id)
+				toast_requested.emit("接取支线：%s" % q.name)
 				hud_changed.emit()
-				AudioBus.play_tone(164, 0.2)
-				_smith_dialog()
-				toast_requested.emit("锻造完成 · 武器 +%d" % GameState.save.upgrade)},
-			{"label": "离开铁匠铺", "run": func(): dialog_closed.emit(), "secondary": true},
-		], "THE LAST FORGE")
-
-func _merchant_dialog() -> void:
-	var save = GameState.save
-	dialog_requested.emit("药剂商 · 莫拉",
-		"<p class='dialog-speaker'>“把这个带上，别让夜色带走你。”</p><p>生命药剂恢复 <b>35 点生命</b>。可以使用快捷键 <b>1</b> 或右下角药剂栏饮用。</p><p>售价 <b>20 余烬币</b> · 行囊中已有 %d 瓶</p>" % save.potions,
-		[
-			{"label": "购买药剂 · 20 币", "disabled": save.gold < 20 or save.potions >= 99, "run": func():
-				if GameState.save.gold < 20 or GameState.save.potions >= 99: return
-				GameState.add_gold(-20)
-				GameState.add_potion(1)
+				dialog_closed.emit()})
+		elif bool(st.done) and not bool(st.claimed):
+			var rw: Dictionary = q.reward
+			var rw_text := ""
+			if rw.has("gold"): rw_text += "%d金币 " % int(rw.gold)
+			if rw.has("xp"): rw_text += "%d经验 " % int(rw.xp)
+			if rw.has("diamonds"): rw_text += "%d钻石" % int(rw.diamonds)
+			actions.append({"label": "领取：" + q.name, "run": func():
+				if GameState.claim_quest("side", q.id):
+					toast_requested.emit("奖励到手：%s" % rw_text)
 				hud_changed.emit()
-				AudioBus.play_tone(440, 0.15)
-				_merchant_dialog()
-				toast_requested.emit("生命药剂已放入行囊。")},
-			{"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true},
-		], "A SMALL REMEDY")
+				dialog_closed.emit()})
+	var actions2 := actions
+	if actions2.is_empty():
+		content += "\n（暂无可接取的支线——完成的任务记得来领赏。）"
+	actions2.append({"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true})
+	dialog_requested.emit("冒险者协会", content, actions2, "ADVENTURERS GUILD")
 
-func _dummy_dialog() -> void:
-	var save = GameState.save
-	var dmg: int = (12 if GameState.is_archer() else 18) + save.upgrade * 4
-	dialog_requested.emit("训练木桩",
-		"<p>磨砺手感，试试你手中的武器。</p><p>本次攻击造成 <b>%d 点训练伤害</b>。首次完成三次训练，可获得 <b>20 余烬币</b>。</p><p>%s</p>" % [
-			dmg, "✓ 今日初训奖励已领取" if save.training_reward else "训练进度 %d / 3" % save.training_hits],
-		[
-			{"label": "攻击木桩", "run": func():
-				var s = GameState.save
-				if not s.training_reward:
-					s.training_hits = mini(3, s.training_hits + 1)
-					if s.training_hits == 3:
-						s.training_reward = true
-						GameState.add_gold(20)
-				GameState.persist()
+# ---- 图书馆 ----
+func _dialog_library() -> void:
+	var quiz: Dictionary = QuestBook.QUIZ_BANK[randi() % QuestBook.QUIZ_BANK.size()]
+	var actions := []
+	actions.append({"label": "研读典籍（30金 → 20经验）", "run": func():
+		if GameState.spend_gold(30):
+			GameState.add_xp(20)
+			toast_requested.emit("旧书页的沙沙声里，时间过得飞快。")
+		else:
+			toast_requested.emit("金币不足。")
+		hud_changed.emit()})
+	for i in range(quiz.a.size()):
+		var idx := i
+		actions.append({"label": "问答：" + quiz.a[i], "run": func():
+			if idx == quiz.correct:
+				toast_requested.emit("答对了！" + quiz.hint + " 奖励 25 金币。")
+				GameState.add_gold(25)
+			else:
+				toast_requested.emit("学者摇头：「下次再想想。」")
+			dialog_closed.emit()})
+	actions.append({"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true})
+	dialog_requested.emit("图书馆 · 星檐塔", "「知识是深渊里唯一的灯。」\n（答案自取——选一条作答）", actions, "THE LIBRARY")
+
+# ---- 修炼场 ----
+func _dialog_training() -> void:
+	dialog_requested.emit("修炼场 · 断剑围栏", "木桩上的刀痕比树纹还密。\n「来两招？闭着眼打也行，肌肉会记住的。」", [
+		{"label": "特训一次（+10 经验）", "run": func():
+			GameState.add_xp(10)
+			GameState.bump_quest("skill", "", 1)
+			GameState.save.training_hits = int(GameState.save.training_hits) + 1
+			toast_requested.emit("挥汗如雨——力量在悄悄生长。")
+			hud_changed.emit()
+			dialog_closed.emit()},
+		{"label": "重置加点（花费金币）", "run": func():
+			if GameState.respec():
+				toast_requested.emit("推倒重来，属性点已返还。")
 				hud_changed.emit()
-				dialog_closed.emit()
-				if dummy_node:
-					dummy_node.rotation.z = -0.16
-					_dummy_reset_timer = 0.2
-				AudioBus.play_tone(280 if GameState.is_archer() else 100, 0.16)
-				var d2: int = (12 if GameState.is_archer() else 18) + s.upgrade * 4
-				toast_requested.emit("命中 · %d 伤害%s" % [d2, " · 初训已完成" if s.training_hits == 3 and s.training_reward else " · 训练 %d/3" % s.training_hits])},
-			{"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true},
-		], "TEMPER YOUR RESOLVE")
+			dialog_closed.emit()},
+		{"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true},
+	], "TRAINING YARD")
 
-func _gate_dialog() -> void:
-	var complete: bool = GameState.save.quest == "complete"
-	var actions: Array = []
-	if complete:
-		actions.append({"label": "进入废弃圣堂", "run": func():
-			dialog_closed.emit()
-			enter_dungeon_requested.emit()})
-	actions.append({"label": "留在庇护所", "run": func(): dialog_closed.emit()})
-	actions.append({"label": "回到灵魂之契", "run": func(): enter_selection_requested.emit(), "secondary": true})
-	dialog_requested.emit("深渊之门",
-		"<p>铁门的另一侧，是没有回声的黑暗。</p><p>%s</p>%s" % [
-			"余火已被点亮。守门人向你颔首，为你推开了第一重封印。" if complete else "守门人低语：“先去照看城中的余火吧，旅人。”",
-			"<p>第一关「废弃圣堂」已开启。清除其中的低语者，可获得 <b>90 余烬币</b>。</p>" if complete else ""],
-		actions, "BEYOND THE VEIL")
+# ---- 告示板 ----
+func _dialog_board() -> void:
+	var q: Dictionary = GameState.save.quests
+	var content := "几张羊皮纸被风掀起边角。\n\n[color=#c9b98a]支线（%d）[/color]" % q.side.size()
+	for qid in q.side:
+		var def: Dictionary = GameState._side_def(qid)
+		var st: Dictionary = q.side[qid]
+		content += "\n· %s %d/%d%s" % [def.get("name", qid), int(st.progress), int(def.get("objective", {}).get("count", 0)), "（已完成）" if bool(st.done) else ""]
+	content += "\n\n[color=#c9b98a]今日日常（%d/3）[/color]" % q.daily.size()
+	for d in q.daily:
+		var def2: Dictionary = GameState._daily_def(d.id)
+		content += "\n· %s %d/%d%s" % [def2.get("name", d.id), int(d.progress), int(def2.get("objective", {}).get("count", 0)), "（已完成）" if bool(d.done) else ""]
+	# 可领取的奖励直接在这里领（不用再去协会/J 面板）。
+	var actions := []
+	for qid in q.side:
+		var st: Dictionary = q.side[qid]
+		if bool(st.done) and not bool(st.claimed):
+			var def: Dictionary = GameState._side_def(qid)
+			actions.append({"label": "领取支线：" + def.get("name", qid), "run": func():
+				if GameState.claim_quest("side", qid):
+					toast_requested.emit("奖励到手。")
+				hud_changed.emit()
+				dialog_closed.emit()})
+	for d in q.daily:
+		if bool(d.done) and not bool(d.claimed):
+			var def2: Dictionary = GameState._daily_def(d.id)
+			actions.append({"label": "领取日常：" + def2.get("name", d.id), "run": func():
+				if GameState.claim_quest("daily", d.id):
+					toast_requested.emit("奖励到手。")
+				hud_changed.emit()
+				dialog_closed.emit()})
+	if actions.is_empty():
+		actions.append({"label": "知道了", "run": func(): dialog_closed.emit(), "secondary": true})
+	else:
+		actions.append({"label": "关闭", "run": func(): dialog_closed.emit(), "secondary": true})
+	dialog_requested.emit("告示板", content, actions, "QUEST BOARD")
+
+# ---- NPC 对话 / 好感 / 招募 ----
+func _talk_npc(n: Actor) -> void:
+	var npc_id: String = n.get_meta("npc_id")
+	var def: Dictionary = NpcBook.NPCS[npc_id]
+	var aff := GameState.affinity_of(npc_id)
+	var dialog: Array = def.get("dialogs", [])
+	var line := "……"
+	if dialog.size() > 0:
+		line = str(dialog[randi() % dialog.size()])
+	var actions := []
+	actions.append({"label": "闲聊（好感 +1）", "run": func():
+		GameState.add_affinity(npc_id, NpcBook.TALK_AFFINITY)
+		toast_requested.emit("%s 好感 %d" % [def.name, GameState.affinity_of(npc_id)])
+		dialog_closed.emit()})
+	# 送礼：优先送偏好的东西。
+	var fav: String = def.get("gift", "")
+	if fav != "":
+		actions.append({"label": "送 %s（好感 +%d）" % [Items.stack_item(fav).name, NpcBook.GIFT_FAV_AFFINITY], "run": func():
+			if GameState.inventory.count_of(fav) > 0:
+				GameState.inventory.remove(fav, 1)
+				GameState.add_affinity(npc_id, NpcBook.GIFT_FAV_AFFINITY)
+				toast_requested.emit("%s 眼睛亮了。好感 %d" % [def.name, GameState.affinity_of(npc_id)])
+			else:
+				GameState.add_affinity(npc_id, NpcBook.GIFT_AFFINITY)
+				toast_requested.emit("没带 %s，随便聊了几句。好感 %d" % [Items.stack_item(fav).name, GameState.affinity_of(npc_id)])
+			dialog_closed.emit()})
+	if not GameState.save.party.has(npc_id):
+		if aff >= 60:
+			actions.append({"label": "招募入队", "run": func():
+				if GameState.recruit(npc_id):
+					toast_requested.emit("%s 加入了队伍！" % def.name)
+					_sync_followers()
+				dialog_closed.emit()})
+		else:
+			actions.append({"label": "招募入队（好感 %d/60）" % aff, "run": func():
+				toast_requested.emit("%s 摆摆手：「多聊聊，多帮帮忙，自然会熟络。」" % def.name)
+				dialog_closed.emit()})
+	else:
+		actions.append({"label": "请离队伍", "run": func():
+			GameState.dismiss(npc_id)
+			_sync_followers()
+			toast_requested.emit("%s 暂时留在了主城。" % def.name)
+			dialog_closed.emit()})
+	actions.append({"label": "离开", "run": func(): dialog_closed.emit(), "secondary": true})
+	dialog_requested.emit("%s（好感 %d）" % [def.name, aff], "「%s」" % line, actions, def.get("role", "NPC").to_upper())
+
+# ---------------- 主循环 ----------------
+func update_town(delta: float, rig: CameraRig) -> void:
+	var time := Time.get_ticks_msec() / 1000.0
+	# 夜间点亮城市暖光源（火盆/路灯/门灯），白天压暗——避免白天一堆"幽灵灯"。
+	var lamp_mul := 0.30 + GameState.night_factor() * 0.95
+	for l in _lamps:
+		if not is_instance_valid(l): continue
+		if not l.has_meta("be"): l.set_meta("be", l.light_energy)
+		l.light_energy = float(l.get_meta("be")) * lamp_mul
+	# 自由移动（WASD）。
+	var iv := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	var cam_fwd := -rig.camera.global_transform.basis.z
+	cam_fwd.y = 0.0
+	cam_fwd = cam_fwd.normalized()
+	var cam_right := rig.camera.global_transform.basis.x
+	cam_right.y = 0.0
+	cam_right = cam_right.normalized()
+	var dir := (cam_fwd * -iv.y + cam_right * iv.x)
+	if dir.length_squared() > 0.001:
+		has_move_target = false
+		pending_interact = ""
+		move_marker.visible = false
+		player.move_step(delta, dir, Input.is_action_pressed("run"))
+	elif has_move_target:
+		var to_t := move_target - player.global_position
+		to_t.y = 0
+		if to_t.length() < 0.35:
+			has_move_target = false
+			move_marker.visible = false
+			# 图标点击寻路：到达后自动交互。
+			if pending_interact != "":
+				var pi := _poi_by_id(pending_interact)
+				pending_interact = ""
+				if not pi.is_empty():
+					var d: float = Vector2(player.global_position.x - pi.position.x, player.global_position.z - pi.position.z).length()
+					if d < 5.0: _interact_poi(pi)
+		else:
+			player.move_step(delta, to_t.normalized())
+	else:
+		player.stop_moving()
+	player.animate_tick(delta, time)
+	# NPC 待机闲逛（在家附近小幅徘徊）。
+	for n in npcs:
+		n.animate_tick(delta, time)
+		if randf() < delta * 0.3:
+			var home: Vector3 = n.get_meta("home")
+			var wander := home + Vector3(randf() * 3.0 - 1.5, 0, randf() * 3.0 - 1.5)
+			if _walkable(wander):
+				n.face_towards(wander, delta)
+	# 随行者。
+	for f in followers:
+		f.ai_tick(delta, time, player)
+	# 近处 POI。
+	_update_near()
+	# 同步玩家位置快照（供 UI/测试读取）。
+	player_position = player.global_position

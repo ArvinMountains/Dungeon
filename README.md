@@ -7,7 +7,8 @@
 最新版本见 **[Releases](https://github.com/ArvinMountains/Dungeon/releases)**。
 
 - **[v0.2.0](https://github.com/ArvinMountains/Dungeon/releases/tag/v0.2.0)** — 当前版本
-  - `Source code (zip)`：完整工程，用 Godot 4.7.2 打开 `project.godot` 运行
+  - Windows（x86_64）：[LostAbyss-v0.2.0-win64.zip](https://github.com/ArvinMountains/Dungeon/releases/download/v0.2.0/LostAbyss-v0.2.0-win64.zip) — 解压后运行 `LostAbyss.exe`（需支持 Vulkan 的显卡）
+  - 源码：Release 页的 `Source code (zip)`，用 Godot 4.7.2 打开 `project.godot` 运行
 
 ## 玩法
 
